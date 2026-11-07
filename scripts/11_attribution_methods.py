@@ -16,8 +16,9 @@ time), Grad-CAM and sliding-window Occlusion (time only). For each:
   step 8           probability falls when sinus P-waves are swapped in?
   agreement        between every pair of methods (time profiles)
 
-A class-balanced random sample is used (config.XAI_METHODS_N_PER_CLASS per
-class, drawn the same way as in steps 7-8, without the extra subgroups). Run after 08_occlusion.py, so the step 8 comparison can be made.
+A class-balanced random subset of the step 7-8 sample is used
+(config.XAI_METHODS_N_PER_CLASS per class, without the extra subgroups), so
+every ECG also has its step 8 counterfactual results. Run after 08_occlusion.py, so the step 8 comparison can be made.
 
 Run from the project folder:
     python scripts/11_attribution_methods.py --n-per-class 20   # quick check
@@ -241,8 +242,13 @@ def main() -> None:
              f"Model: **{primary['name']}** (primary). Six methods on the same ECGs and the same "
              f"output (the AF logit). First/last {config.EDGE_MARGIN_S} s left out.\n"]
     for key in keys:
-        sel = select(key, args.n_per_class, primary)
-        sel = sel[sel["grp_af_random"] | sel["grp_non_random"]].reset_index(drop=True)
+        # draw from the same sample as steps 7-8, so every ECG here also has
+        # its counterfactual results from step 8; select() returns a random
+        # order, so the first N of each class are a fair subset
+        sel = select(key, config.XAI_N_PER_CLASS, primary)
+        sel = pd.concat([sel[sel["grp_af_random"]].head(args.n_per_class),
+                         sel[sel["grp_non_random"] & ~sel["grp_af_random"]].head(args.n_per_class)])
+        sel = sel.reset_index(drop=True)
         res, mean_curves, agree = run_dataset(key, sel, expl, model, device, args.batch)
         res.to_csv(config.XAI_DIR / f"methods_{key}{tag}.csv", index=False)
         occ_f = config.RESULTS_DIR / "occlusion" / f"occlusion_{key}{tag}.csv"
