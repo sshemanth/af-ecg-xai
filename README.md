@@ -165,7 +165,27 @@ python scripts/07_attributions.py --n-per-class 20
 python scripts/07_attributions.py
 ```
 
-The first command is a quick check. The script explains the primary model on held-out ECGs with Integrated Gradients (lead × time) and Grad-CAM (time). Each beat is split, from its R-peaks, into atrial (P/f-waves), QRS and ST-T windows; the report gives the share of evidence for AF in each window and its enrichment (share ÷ time), by group (AF, non-AF, low-RR-variability AF, near-regular AF, paced AF), by lead, for caught vs missed AF, and PTB-XL vs Chapman. It also reports agreement between the two methods and stability under 0.01 mV noise. Example plots: `results/xai/examples_<dataset>.png`. The first and last 0.5 s of each ECG are excluded.
+The first command is a quick check. The script explains the primary model on held-out ECGs with Integrated Gradients (lead × time) and Grad-CAM (time). Each beat is split, from its R-peaks and its measured T-wave end, into atrial (P/f-waves), QRS and ST-T windows; the report gives the share of evidence for AF in each window and its enrichment (share ÷ time), by group (AF, non-AF, low-RR-variability AF, near-regular AF, paced AF), by lead, for caught vs missed AF, and PTB-XL vs Chapman. It also reports agreement between the two methods and stability under 0.01 mV noise. Example plots: `results/xai/examples_<dataset>.png`. The first and last 0.5 s of each ECG are excluded.
+
+### 8. Occlusion and counterfactual tests
+
+```bash
+python scripts/08_occlusion.py --n-per-class 20
+python scripts/08_occlusion.py
+```
+
+The first command is a quick check. On the same held-out ECGs as step 7, the primary model scores each ECG and a set of controlled changes; the outcome is the change in AF probability:
+
+| Change | What it does |
+|---|---|
+| `atrial_removed` | Atrial windows replaced by a straight line (P/f-waves gone; QRS, ST-T and timing kept) |
+| `qrs_removed`, `stt_removed` | The same for QRS or ST-T windows |
+| `matched_control` | The same total length removed at random places (may include QRS or ST-T) |
+| `rr_regularised` | Beats moved to even spacing; every QRS and ST-T copied exactly, only atrial windows resampled |
+| `atrial_swapped` | Atrial windows filled from an opposite-class ECG (sinus P-waves into AF, f-waves into non-AF), timing unchanged |
+| `atrial_removed_<lead>` | Atrial windows removed in one lead only |
+
+If removing atrial activity lowers the AF probability more than regularising the rhythm (and more than the matched control), the model depends on atrial morphology; the reverse means it depends on timing. Every changed ECG is checked automatically (finite values, plausible amplitude, no jumps) and failures are counted. Statistics are paired: Wilcoxon signed-rank tests, rank-biserial effect sizes, bootstrap 95% CIs and Benjamini-Hochberg correction across comparisons and across leads. Report: `results/08_occlusion_report.md`; example plot: `results/occlusion/example_<dataset>.png`.
 
 ### Check the setup at any time
 
@@ -190,8 +210,9 @@ All settings are in `src/config.py`.
 | Threshold | Youden's J on validation, then locked | Chosen without test data |
 | Primary model | Seed with best validation AUPRC | Chosen without test data |
 | Regular-rate AF | rr_cv ≤ 90th percentile of sinus rhythm (strict: 75th) | "As regular as a normal heartbeat" |
-| Beat windows | QRS R−60 to R+100 ms; ST-T to QRS onset + 0.44·√RR; atrial to next R−60 ms | Conservative against labelling ventricular activity as atrial |
-| Edge margin | First and last 0.5 s left out of attribution | Edges of a 10 s strip are uncertain |
+| Beat windows | QRS R−60 to R+100 ms; ST-T to the later of the measured T-wave end + 20 ms and QRS onset + 0.44·√RR; atrial to next R−60 ms | Conservative against labelling ventricular activity (including T-wave tails) as atrial |
+| Edge margin | First and last 0.5 s left out of attribution and never changed by occlusion | Edges of a 10 s strip are uncertain |
+| Occlusion | Straight-line replacement; RR regularisation keeps QRS and ST-T exact | Isolates atrial content from timing without distorting ventricular shapes |
 
 ---
 
@@ -212,6 +233,7 @@ af-ecg-xai/
 │   ├── 05_train.py                train the 1D ResNet
 │   ├── 06_evaluate.py             held-out metrics, CIs, calibration, subgroups
 │   ├── 07_attributions.py         Integrated Gradients, Grad-CAM, window shares
+│   ├── 08_occlusion.py            occlusion and counterfactual tests
 │   ├── plot_examples.py           ECGs with R-peaks, for visual checks
 │   └── plot_raw_vs_filtered.py    one ECG before and after filtering
 ├── src/
@@ -225,8 +247,10 @@ af-ecg-xai/
 │   ├── metrics.py                 metrics and threshold rule
 │   ├── evaluation.py              bootstrap CIs and calibration
 │   ├── runs.py                    trained runs and primary model
-│   ├── windows.py                 atrial / QRS / ST-T windows
-│   └── xai.py                     attribution methods
+│   ├── selection.py               which held-out ECGs are analysed
+│   ├── windows.py                 atrial / QRS / ST-T windows, T-wave ends
+│   ├── xai.py                     attribution methods
+│   └── perturb.py                 occlusion and counterfactual changes
 ├── data/raw/                      downloaded data (not tracked)
 ├── data/processed/                label tables, signal arrays (not tracked)
 ├── results/                       reports, models, plots (not tracked)
