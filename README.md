@@ -234,6 +234,23 @@ python scripts/11_attribution_methods.py --arch inception
 
 Run after step 8. Six methods explain the same model on the same ECGs (100 AF and 100 non-AF per dataset by default): Integrated Gradients, DeepLIFT, GradientSHAP (baselines drawn from 32 PTB-XL training ECGs), Input × Gradient, Grad-CAM and sliding-window Occlusion (100 ms windows across all leads). For each it reports the share and enrichment of evidence for AF in atrial, QRS and ST-T windows in AF ECGs, the share of evidence *against* AF in atrial windows in non-AF ECGs, a deletion test (100 ms segments removed most-relevant-first and least-relevant-first; area between the curves, compared with random order), the correlation of each map with the step 8 counterfactual effects, and the agreement between every pair of methods. A removed segment is a flat line with no P-wave, which the model may itself read as AF evidence, so the deletion test is reported with that caveat (`src/faithfulness.py`). Report: `results/11_attribution_methods_report.md`; deletion curves: `results/xai/deletion_<dataset>.png`.
 
+### 12. Doubtful AF labels
+
+```bash
+python scripts/12_label_check.py
+```
+
+An ECG labelled both AF and a sinus-type rhythm (sinus rhythm, sinus brady- or tachycardia, sinus arrhythmia) most likely had AF at another time, not in this 10 s strip. The check finds these from the labels alone, never from model output, and reports how many there are (overall and in the low-RR-variability and near-regular AF groups), how often each model detects them compared with clean AF labels, and performance with them left out as a sensitivity analysis. The main results always keep every label as given. Report: `results/12_label_check_report.md`.
+
+**Blinded clinician review.** For a direct check, a clinician can review the doubtful ECGs without seeing labels or model output:
+
+```bash
+python scripts/review_set.py make --dataset georgia
+python scripts/review_set.py score --dataset georgia
+```
+
+`make` takes every near-regular AF ECG (strict rule; `--group main` for the wider rule) and mixes in controls (30 irregular AF, 30 sinus rhythm, 15 other non-AF), shuffled under anonymous IDs. It writes `results/review/<dataset>/review_ecgs.pdf` (one 12-lead ECG per page at 25 mm/s and 10 mm/mV), `review_sheet.csv`, `INSTRUCTIONS.txt`, and the answer key in `key/`, which stays with you. The reviewer marks each ECG AF, not AF or unsure. `score` reports agreement with the official labels in each group (the controls show how reliable the review is) and how the models did on AF labels the reviewer confirmed vs rejected. Report: `results/review_report_<dataset>.md`.
+
 ### Second network and second external set
 
 Every step from 6 on takes `--arch inception` (except 9, which takes `--arch` or `--model`) and works on Georgia as well as Chapman. Other architectures add `_<arch>` to their output file names; a single `--dataset` adds `_<dataset>` to report names, so nothing overwrites the main ResNet reports. Order after downloading Georgia and training InceptionTime:
@@ -307,6 +324,8 @@ af-ecg-xai/
 │   ├── 09_false_alarms.py         false alarms by rhythm (external sets)
 │   ├── 10_occlusion_tests.py      paired tests for swap and P-wave removal, every seed
 │   ├── 11_attribution_methods.py  six attribution methods, deletion test, agreement
+│   ├── 12_label_check.py          AF labels that conflict with a sinus-rhythm label
+│   ├── review_set.py              blinded clinician review of doubtful labels
 │   ├── plot_calibration.py        calibration plots from saved predictions
 │   ├── plot_examples.py           ECGs with R-peaks, for visual checks
 │   └── plot_raw_vs_filtered.py    one ECG before and after filtering
@@ -327,6 +346,7 @@ af-ecg-xai/
 │   ├── windows.py                 atrial / QRS / ST-T windows, T-wave ends
 │   ├── xai.py                     attribution methods
 │   ├── faithfulness.py            deletion test
+│   ├── dx.py                      diagnosis codes and rhythm groups (Challenge sets)
 │   ├── stats.py                   paired tests, bootstrap, multiple-testing correction
 │   └── perturb.py                 occlusion and counterfactual changes
 ├── data/raw/                      downloaded data (not tracked)
