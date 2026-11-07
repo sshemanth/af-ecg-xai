@@ -31,12 +31,19 @@ Statistics are paired (each ECG is its own control): Wilcoxon signed-rank
 tests, rank-biserial effect sizes, bootstrap 95% CIs, and Benjamini-Hochberg
 correction across comparisons and across leads.
 
+By default only the primary model is tested. --seed all runs the same
+changed ECGs through every trained seed, to check the result is not
+specific to one model; each ECG is changed once and scored by all seeds.
+
 Run from the project folder, after 06_evaluate.py:
     python scripts/08_occlusion.py --n-per-class 20   # quick check
-    python scripts/08_occlusion.py
+    python scripts/08_occlusion.py                    # primary model
+    python scripts/08_occlusion.py --seed all         # every seed
+    python scripts/08_occlusion.py --seed 1,2         # chosen seeds (primary always included)
 
-Outputs: results/occlusion/ (per-ECG table, example plot) and
-results/08_occlusion_report.md
+Outputs: results/occlusion/ (per-ECG tables, example plot),
+results/08_occlusion_report.md (primary model) and, with more than one
+seed, results/08_occlusion_seeds_report.md (results side by side)
 """
 import argparse
 import sys
@@ -97,7 +104,15 @@ def score(model, batch: list[np.ndarray], device) -> np.ndarray:
     return torch.sigmoid(model(xb)).float().cpu().numpy()
 
 
-def run_dataset(key: str, model, primary: dict, device, n_per_class: int):
+def with_predictions(sel: pd.DataFrame, key: str, run: dict) -> pd.DataFrame:
+    """The selected ECGs with this run's prediction (same ECGs for every seed)."""
+    pred = held_out_table(key, run)[["record_id", "prob", "pred_af", "correct"]]
+    return sel.drop(columns=["prob", "pred_af", "correct"]).merge(pred, on="record_id", how="left")
+
+
+def run_dataset(key: str, models: dict, primary: dict, device, n_per_class: int):
+    """models: {run name: (run, model)}. Returns per-run result tables, the
+    count of changed ECGs that failed the checks, and an example for the plot."""
     sel = select(key, n_per_class, primary)
     pool = held_out_table(key, primary)
     ds = ECGDataset(key, DATASETS[key][1], train=False)
@@ -120,7 +135,8 @@ def run_dataset(key: str, model, primary: dict, device, n_per_class: int):
             donor_cache[did] = (dx, windows_for(dx, dp))
         return donor_cache[did]
 
-    rows, failed, example = [], {k: 0 for k in MAIN + LEAD_TESTS}, None
+    rows = {name: [] for name in models}
+    failed, example = {k: 0 for k in MAIN + LEAD_TESTS}, None
     for _, r in tqdm(sel.iterrows(), total=len(sel), desc=f"{key} occlusion"):
         x = ds[pos[r["record_id"]]][0].numpy()
         peaks = np.array(str(r["rpeaks"]).split(), dtype=int)
@@ -133,14 +149,18 @@ def run_dataset(key: str, model, primary: dict, device, n_per_class: int):
                 batch.append(v)
             else:
                 failed[name] += 1
-        probs = dict(zip(names, score(model, batch, device)))
-        row = {"record_id": r["record_id"], "prob_original": float(probs["original"])}
-        for name in var:
-            row[f"delta_{name}"] = float(probs[name] - probs["original"]) if name in probs else np.nan
-        rows.append(row)
-        if example is None and r["label"] == 1 and r["correct"] and all(n in probs for n in MAIN):
-            example = {"id": r["record_id"], "x": x, "codes": codes, "var": var, "probs": probs}
-    res = sel.merge(pd.DataFrame(rows), on="record_id")
+        for run_name, (_, model) in models.items():
+            probs = dict(zip(names, score(model, batch, device)))
+            row = {"record_id": r["record_id"], "prob_original": float(probs["original"])}
+            for name in var:
+                row[f"delta_{name}"] = float(probs[name] - probs["original"]) if name in probs else np.nan
+            rows[run_name].append(row)
+            if (run_name == primary["name"] and example is None and r["label"] == 1
+                    and r["correct"] and all(n in probs for n in MAIN)):
+                example = {"id": r["record_id"], "x": x, "codes": codes, "var": var, "probs": probs}
+    res = {name: (sel if name == primary["name"] else with_predictions(sel, key, run))
+           .merge(pd.DataFrame(rows[name]), on="record_id")
+           for name, (run, _) in models.items()}
     return res, failed, example
 
 
@@ -187,6 +207,18 @@ def fmt_p(p: float) -> str:
     return "–" if p != p else ("<0.001" if p < 0.001 else f"{p:.3f}")
 
 
+def comparison_tests(res: pd.DataFrame) -> list[tuple]:
+    """Paired comparisons on detected AF ECGs, BH-adjusted across all rows:
+    [(group, first, second, test result, adjusted p), ...]"""
+    tests, labels = [], []
+    for gname, col in [("AF (random sample)", "grp_af_random"), ("Low-RR-variability AF", "regular_af")]:
+        g = res[res[col] & res["pred_af"] & (res["label"] == 1)]
+        for a, b in COMPARISONS:
+            tests.append(paired_test(g[f"delta_{a}"].to_numpy(), g[f"delta_{b}"].to_numpy()))
+            labels.append((gname, a, b))
+    return [(*lab, t, q) for lab, t, q in zip(labels, tests, bh([t["p"] for t in tests]))]
+
+
 def report_dataset(key: str, res: pd.DataFrame, failed: dict, threshold: float) -> list[str]:
     L = [f"## {DATASETS[key][0]}\n",
          f"{len(res)} ECGs. Δ = changed minus original AF probability "
@@ -220,14 +252,7 @@ def report_dataset(key: str, res: pd.DataFrame, failed: dict, threshold: float) 
           "p-values Benjamini-Hochberg adjusted across all rows.\n",
           "| Group | First | Second | n | Median difference in Δ | r | p (adjusted) |",
           "|---|---|---|---|---|---|---|"]
-    tests, labels = [], []
-    for gname, col in [("AF (random sample)", "grp_af_random"), ("Low-RR-variability AF", "regular_af")]:
-        g = res[res[col] & res["pred_af"] & (res["label"] == 1)]
-        for a, b in COMPARISONS:
-            t = paired_test(g[f"delta_{a}"].to_numpy(), g[f"delta_{b}"].to_numpy())
-            tests.append(t)
-            labels.append((gname, a, b))
-    for (gname, a, b), t, q in zip(labels, tests, bh([t["p"] for t in tests])):
+    for gname, a, b, t, q in comparison_tests(res):
         L.append(f"| {gname} | {a} | {b} | {t['n']} | {t['median_diff']:+.3f} | "
                  f"{t['r']:+.2f} | {fmt_p(q)} |")
     L.append("")
@@ -246,6 +271,46 @@ def report_dataset(key: str, res: pd.DataFrame, failed: dict, threshold: float) 
     L.append("Automatic checks: " + (", ".join(f"{k} {v}" for k, v in bad.items())
                                      + " changed ECGs failed and were left out." if bad
                                      else "every changed ECG passed.") + "\n")
+    return L
+
+
+def seeds_report(key: str, res: dict, runs: dict) -> list[str]:
+    """Each seed's results side by side. Each seed judges "detected" with its
+    own locked threshold, so the detected-AF groups can differ slightly."""
+    names = sorted(res, key=lambda n: runs[n]["seed"])
+    head = " | ".join(f"Seed {runs[n]['seed']}" for n in names)
+    sep = "|".join(["---"] * (len(names) + 2))
+    L = [f"## {DATASETS[key][0]}\n"]
+    groups = [("Detected AF (random sample)", lambda r: r["grp_af_random"] & r["pred_af"] & (r["label"] == 1)),
+              ("Non-AF (random sample)", lambda r: r["grp_non_random"]),
+              ("Detected low-RR-variability AF", lambda r: r["regular_af"] & r["pred_af"] & (r["label"] == 1))]
+    for gname, pick in groups:
+        L += [f"### {gname}: mean Δ by seed\n",
+              f"| Change | {head} | Across seeds: mean (min to max) |", f"|{sep}|"]
+        for change in MAIN:
+            means = [res[n][pick(res[n])][f"delta_{change}"].mean() for n in names]
+            m = np.array(means, float)
+            if np.isnan(m).all():
+                continue
+            cells = " | ".join("–" if v != v else f"{v:+.3f}" for v in m)
+            L.append(f"| {change} | {cells} | {np.nanmean(m):+.3f} ({np.nanmin(m):+.3f} to {np.nanmax(m):+.3f}) |")
+        ns = [int(pick(res[n]).sum()) for n in names]
+        L.append(f"\nECGs per seed: {', '.join(map(str, ns))}\n")
+
+    L += ["### Paired comparisons by seed (rank-biserial r; * = adjusted p < 0.05)\n",
+          "Negative r: the first change lowers the AF probability more than the second.\n",
+          f"| Group | First | Second | {head} | Significant in |", f"|---|---|{sep}|"]
+    per_seed = {n: comparison_tests(res[n]) for n in names}
+    for i, (gname, a, b, _, _) in enumerate(per_seed[names[0]]):
+        cells, k, tested = [], 0, 0
+        for n in names:
+            t, q = per_seed[n][i][3], per_seed[n][i][4]
+            star = "*" if q == q and q < 0.05 else ""
+            k += bool(star)
+            tested += q == q
+            cells.append("–" if t["r"] != t["r"] else f"{t['r']:+.2f}{star}")
+        L.append(f"| {gname} | {a} | {b} | {' | '.join(cells)} | {k}/{tested} seeds |")
+    L.append("")
     return L
 
 
@@ -278,14 +343,28 @@ def main() -> None:
     ap.add_argument("--dataset", choices=["ptbxl", "chapman", "all"], default="all")
     ap.add_argument("--n-per-class", type=int, default=config.XAI_N_PER_CLASS)
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--seed", default="primary",
+                    help="'primary' (default), 'all', or seeds such as 1,2")
     args = ap.parse_args()
 
     runs = find_resnet_runs(verbose=False)
     if not runs:
         sys.exit("No trained ResNet runs found.")
     primary = primary_run(runs)
+    if args.seed == "primary":
+        chosen = [primary]
+    elif args.seed == "all":
+        chosen = runs
+    else:
+        want = {int(s) for s in args.seed.split(",")}
+        chosen = [r for r in runs if r["seed"] in want or r is primary]
+        missing = want - {r["seed"] for r in runs}
+        if missing:
+            sys.exit(f"Seed(s) {sorted(missing)} not trained. Trained: {sorted(r['seed'] for r in runs)}")
     device = pick_device(args.device)
-    model = load_model(primary, device)
+    models = {r["name"]: (r, load_model(r, device)) for r in chosen}
+    run_info = {r["name"]: r for r in chosen}
+    print(f"Models: {', '.join(models)} (primary: {primary['name']})")
     mean, std = load_norm_stats()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -294,11 +373,18 @@ def main() -> None:
     lines = ["# Occlusion and counterfactual tests\n",
              f"Model: **{primary['name']}** (primary). Does the model need atrial activity, "
              f"or does it rely on beat timing? First/last {config.EDGE_MARGIN_S} s never changed.\n"]
-    results = {}
+    results, seed_lines = {}, ["# Occlusion and counterfactual tests: every seed\n",
+                               f"Same ECGs and the same changes for each seed; primary model "
+                               f"{primary['name']}. Does the pattern hold for every trained model?\n"]
     for key in keys:
-        res, failed, ex = run_dataset(key, model, primary, device, args.n_per_class)
-        res.to_csv(OUT_DIR / f"occlusion_{key}.csv", index=False)
+        by_run, failed, ex = run_dataset(key, models, primary, device, args.n_per_class)
+        for name, r in by_run.items():
+            suffix = "" if name == primary["name"] else f"_{name}"
+            r.to_csv(OUT_DIR / f"occlusion_{key}{suffix}.csv", index=False)
+        res = by_run[primary["name"]]
         results[key] = res
+        if len(models) > 1:
+            seed_lines += seeds_report(key, by_run, run_info)
         lines += report_dataset(key, res, failed, primary["threshold"])
         if ex is not None:
             p = plot_example(key, ex, mean, std)
@@ -324,6 +410,10 @@ def main() -> None:
     text = "\n".join(lines)
     (config.RESULTS_DIR / "08_occlusion_report.md").write_text(text)
     print("\n" + text)
+    if len(models) > 1:
+        text = "\n".join(seed_lines)
+        (config.RESULTS_DIR / "08_occlusion_seeds_report.md").write_text(text)
+        print("\n" + text)
 
 
 if __name__ == "__main__":
