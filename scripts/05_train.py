@@ -1,4 +1,4 @@
-"""Step 5: train the 1D ResNet on PTB-XL.
+"""Step 5: train a network on PTB-XL (the 1D ResNet by default).
 
   - trained on the PTB-XL training split only
   - validation split for early stopping, model choice and the threshold
@@ -13,10 +13,14 @@ Run from the project folder, after 02_preprocess.py:
     python scripts/05_train.py --seed 1                   # one full run
     python scripts/05_train.py --seed all                 # all seeds in config.RUN_SEEDS
     python scripts/05_train.py --seed 2,3,4,5             # several specific seeds
+    python scripts/05_train.py --arch inception --seed all   # second architecture
 
-Outputs per run (results/models/resnet_seed<N>/):
+Same data, loss, augmentation, schedule and threshold rule for every
+architecture; only the network changes.
+
+Outputs per run (results/models/<arch>_seed<N>/):
     model.pt, threshold.json, val_predictions.csv, history.csv, run_config.json
-and results/05_train_report.md (summary of every run so far)
+and results/05_train_report.md (ResNet) or 05_train_report_<arch>.md
 """
 import argparse
 import json
@@ -36,7 +40,8 @@ from torch.utils.data import DataLoader  # noqa: E402
 from src import config  # noqa: E402
 from src.data import ECGDataset  # noqa: E402
 from src.metrics import choose_threshold, summarise  # noqa: E402
-from src.model import ResNet1d, pick_device  # noqa: E402
+from src.model import build_model, pick_device  # noqa: E402
+from src.runs import arch_label, arch_tag  # noqa: E402
 
 
 def set_seed(seed: int) -> None:
@@ -57,7 +62,7 @@ def predict(model, loader, device) -> np.ndarray:
 def train_one(seed: int, args) -> dict:
     set_seed(seed)
     device = pick_device(args.device)
-    run_dir = config.MODELS_DIR / f"resnet_seed{seed}"
+    run_dir = config.MODELS_DIR / f"{args.arch}_seed{seed}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     train_ds = ECGDataset("ptbxl", ["train"], train=True, limit=args.limit, seed=seed)
@@ -79,12 +84,12 @@ def train_one(seed: int, args) -> dict:
     else:
         pos_weight = float(config.POS_WEIGHT) if config.POS_WEIGHT else 1.0
 
-    model = ResNet1d(dropout=args.dropout).to(device)
+    model = build_model(args.arch, dropout=args.dropout).to(device)
     loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.WEIGHT_DECAY)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
 
-    print(f"\n=== seed {seed} | device {device} | train {len(train_ds)} ({int(n_pos)} AF) "
+    print(f"\n=== {arch_label(args.arch)} seed {seed} | device {device} | train {len(train_ds)} ({int(n_pos)} AF) "
           f"| val {len(val_ds)} | pos_weight {pos_weight:.1f} | "
           f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M params ===")
 
@@ -133,18 +138,21 @@ def train_one(seed: int, args) -> dict:
     (run_dir / "threshold.json").write_text(json.dumps(
         {"threshold": thr, "rule": config.THRESHOLD_RULE, "chosen_on": "ptbxl val"}, indent=2))
     (run_dir / "run_config.json").write_text(json.dumps({
-        "seed": seed, "lr": args.lr, "dropout": args.dropout, "batch_size": args.batch_size,
+        "arch": args.arch, "seed": seed, "lr": args.lr, "dropout": args.dropout, "batch_size": args.batch_size,
         "max_epochs": args.epochs, "best_epoch": best_epoch, "pos_weight": pos_weight,
-        "limit": args.limit, "device": str(device), "widths": config.RESNET_WIDTHS,
-        "blocks": config.RESNET_BLOCKS, "kernel": config.RESNET_KERNEL,
+        "limit": args.limit, "device": str(device),
+        **({"widths": config.RESNET_WIDTHS, "blocks": config.RESNET_BLOCKS,
+            "kernel": config.RESNET_KERNEL} if args.arch == "resnet" else
+           {"filters": config.INCEPTION_FILTERS, "depth": config.INCEPTION_DEPTH,
+            "kernels": config.INCEPTION_KERNELS, "bottleneck": config.INCEPTION_BOTTLENECK}),
         "train_crop_s": config.TRAIN_CROP_S, "weight_decay": config.WEIGHT_DECAY,
     }, indent=2))
     return {"seed": seed, "best_epoch": best_epoch, "quick_test": bool(args.limit), **val_metrics}
 
 
-def write_report() -> None:
+def write_report(arch: str) -> None:
     rows = []
-    for d in sorted(config.MODELS_DIR.glob("resnet_seed*")):
+    for d in sorted(config.MODELS_DIR.glob(f"{arch}_seed*")):
         cfg_f, pred_f, thr_f = d / "run_config.json", d / "val_predictions.csv", d / "threshold.json"
         if not (cfg_f.exists() and pred_f.exists() and thr_f.exists()):
             continue
@@ -156,7 +164,7 @@ def write_report() -> None:
     if not rows:
         return
     df = pd.DataFrame(rows)
-    lines = ["# 1D ResNet training (validation only)\n",
+    lines = [f"# {arch_label(arch)} training (validation only)\n",
              "Threshold per run chosen on PTB-XL val (Youden) and locked. "
              "Test split and Chapman not used.\n",
              "| Seed | Best epoch | AUROC | AUPRC | Threshold | Sens | Spec | PPV | F1 | Note |",
@@ -174,12 +182,13 @@ def write_report() -> None:
     if base.exists():
         lines.append("\nCompare with the RR-only baseline in `results/04_rr_baseline_report.md`.")
     text = "\n".join(lines) + "\n"
-    (config.RESULTS_DIR / "05_train_report.md").write_text(text)
+    (config.RESULTS_DIR / f"05_train_report{arch_tag(arch)}.md").write_text(text)
     print("\n" + text)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", choices=config.ARCHS, default="resnet")
     ap.add_argument("--seed", default="1",
                     help="a number, a comma list like 2,3,4,5, or 'all' for config.RUN_SEEDS")
     ap.add_argument("--epochs", type=int, default=config.MAX_EPOCHS)
@@ -196,7 +205,7 @@ def main() -> None:
              else [int(s) for s in args.seed.split(",") if s.strip()])
     for seed in seeds:
         train_one(seed, args)
-    write_report()
+    write_report(args.arch)
 
 
 if __name__ == "__main__":
