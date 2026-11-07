@@ -58,7 +58,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import torch  # noqa: E402
-from scipy.stats import wilcoxon  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from src import config  # noqa: E402
@@ -68,6 +67,7 @@ from src.perturb import (matched_control, plausible, regularise_rr,  # noqa: E40
                          remove_windows, swap_atrial)
 from src.runs import find_resnet_runs, load_model, primary_run  # noqa: E402
 from src.selection import DATASETS, GROUPS, held_out_table, select  # noqa: E402
+from src.stats import bh, boot_mean, fmt_p, paired_test  # noqa: E402
 from src.windows import ATRIAL, QRS, STT, beat_windows, t_wave_ends  # noqa: E402
 
 OUT_DIR = config.RESULTS_DIR / "occlusion"
@@ -162,49 +162,6 @@ def run_dataset(key: str, models: dict, primary: dict, device, n_per_class: int)
            .merge(pd.DataFrame(rows[name]), on="record_id")
            for name, (run, _) in models.items()}
     return res, failed, example
-
-
-# ---------------------------------------------------------------------------
-# Statistics
-# ---------------------------------------------------------------------------
-def boot_mean(v: np.ndarray, n: int = 2000) -> tuple[float, float]:
-    rng = np.random.default_rng(config.SEED)
-    m = [rng.choice(v, len(v)).mean() for _ in range(n)]
-    return float(np.percentile(m, 2.5)), float(np.percentile(m, 97.5))
-
-
-def paired_test(a: np.ndarray, b: np.ndarray) -> dict:
-    """Wilcoxon signed-rank on a - b, with the matched-pairs rank-biserial
-    effect size (from -1 to 1; positive means a > b)."""
-    ok = ~(np.isnan(a) | np.isnan(b))
-    d = a[ok] - b[ok]
-    d = d[d != 0]
-    if len(d) < 6:
-        return {"n": int(ok.sum()), "median_diff": float("nan"), "r": float("nan"), "p": float("nan")}
-    ranks = pd.Series(np.abs(d)).rank().to_numpy()
-    r = (ranks[d > 0].sum() - ranks[d < 0].sum()) / ranks.sum()
-    p = wilcoxon(d).pvalue
-    return {"n": int(ok.sum()), "median_diff": float(np.median(a[ok] - b[ok])), "r": float(r), "p": float(p)}
-
-
-def bh(p: list[float]) -> list[float]:
-    """Benjamini-Hochberg adjusted p-values (NaNs kept as NaN)."""
-    p = np.asarray(p, float)
-    out = np.full_like(p, np.nan)
-    ok = ~np.isnan(p)
-    if ok.any():
-        pv = p[ok]
-        order = np.argsort(pv)
-        ranked = pv[order] * len(pv) / (np.arange(len(pv)) + 1)
-        adj = np.minimum.accumulate(ranked[::-1])[::-1]
-        res = np.empty_like(pv)
-        res[order] = np.minimum(adj, 1.0)
-        out[ok] = res
-    return out.tolist()
-
-
-def fmt_p(p: float) -> str:
-    return "–" if p != p else ("<0.001" if p < 0.001 else f"{p:.3f}")
 
 
 def comparison_tests(res: pd.DataFrame) -> list[tuple]:
