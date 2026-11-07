@@ -166,7 +166,7 @@ def write_report(arch: str) -> None:
     df = pd.DataFrame(rows)
     lines = [f"# {arch_label(arch)} training (validation only)\n",
              "Threshold per run chosen on PTB-XL val (Youden) and locked. "
-             "Test split and Chapman not used.\n",
+             "Test split and external sets not used.\n",
              "| Seed | Best epoch | AUROC | AUPRC | Threshold | Sens | Spec | PPV | F1 | Note |",
              "|---|---|---|---|---|---|---|---|---|---|"]
     for r in df.itertuples():
