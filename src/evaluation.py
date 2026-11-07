@@ -1,5 +1,6 @@
 """Bootstrap confidence intervals and calibration."""
 import numpy as np
+import pandas as pd
 from scipy.optimize import minimize, minimize_scalar
 from scipy.special import expit, logit
 from sklearn.metrics import average_precision_score, roc_auc_score
@@ -132,6 +133,30 @@ def calibration(y, p, n_bins: int = config.CALIBRATION_BINS) -> dict:
             "brier": float(np.mean((p - y) ** 2)), "ece": float(ece), "curve": curve}
 
 
+def calibration_bins(y, p, n_bins: int = config.CALIBRATION_BINS,
+                     strategy: str = "uniform") -> pd.DataFrame:
+    """Binned calibration curve with the number of ECGs and a 95% Wilson CI
+    per bin. 'uniform' = equal-width bins (as used for ECE); 'quantile' =
+    bins holding about the same number of ECGs each."""
+    y = np.asarray(y).astype(int)
+    p = np.asarray(p, float)
+    if strategy == "quantile":
+        edges = np.unique(np.quantile(p, np.linspace(0, 1, n_bins + 1)))
+    else:
+        edges = np.linspace(0, 1, n_bins + 1)
+    idx = np.clip(np.searchsorted(edges, p, side="right") - 1, 0, len(edges) - 2)
+    rows = []
+    for k in range(len(edges) - 1):
+        m = idx == k
+        if not m.any():
+            continue
+        n, a = int(m.sum()), int(y[m].sum())
+        lo, hi = wilson_ci(a, n)
+        rows.append({"lo_edge": edges[k], "hi_edge": edges[k + 1], "n": n, "n_af": a,
+                     "mean_pred": float(p[m].mean()), "obs": a / n, "obs_lo": lo, "obs_hi": hi})
+    return pd.DataFrame(rows)
+
+
 def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """95% CI for a proportion (e.g. sensitivity in a small subgroup)."""
     if n == 0:
@@ -139,4 +164,4 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     ph = k / n
     centre = (ph + z * z / (2 * n)) / (1 + z * z / n)
     half = z * np.sqrt(ph * (1 - ph) / n + z * z / (4 * n * n)) / (1 + z * z / n)
-    return float(centre - half), float(centre + half)
+    return float(max(centre - half, 0.0)), float(min(centre + half, 1.0))

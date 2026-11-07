@@ -30,10 +30,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import matplotlib  # noqa: E402
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import torch  # noqa: E402
@@ -45,6 +41,7 @@ from src.evaluation import (auroc_draws, bootstrap_ci, calibration,  # noqa: E40
                             independent_diff_ci, paired_auroc_diff, wilson_ci)
 from src.metrics import summarise  # noqa: E402
 from src.model import pick_device  # noqa: E402
+from src.plots import plot_calibration  # noqa: E402
 from src.runs import find_resnet_runs, load_model, primary_run  # noqa: E402
 
 DATASETS = {"ptbxl": {"name": "PTB-XL test (internal)", "splits": ["test"]},
@@ -111,23 +108,6 @@ def metrics_table(rows: list[tuple[str, dict, dict]]) -> list[str]:
             fmt_ci(m[k], ci.get(k)) for k in
             ["auroc", "auprc", "sensitivity", "specificity", "ppv", "npv", "f1"]) + " |")
     return out
-
-
-def plot_calibration(curves: dict, title: str, path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.plot([0, 1], [0, 1], ls="--", color="grey", lw=1, label="perfect")
-    for name, cal in curves.items():
-        xs, ys, _ = zip(*cal["curve"]) if cal["curve"] else ([], [], [])
-        ax.plot(xs, ys, marker="o", lw=1.5, label=f"{name} (slope {cal['slope']:.2f})")
-    ax.set_xlabel("Predicted AF probability")
-    ax.set_ylabel("Observed AF rate")
-    ax.set_title(title, fontsize=10)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.legend(fontsize=8, loc="upper left")
-    fig.tight_layout()
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +190,9 @@ def evaluate_dataset(key: str, runs: list[dict], primary: dict, device, args) ->
     L.append("\nThe ResNet uses a class-weighted loss, which tends to push probabilities up. "
              "Calibration only affects how far the probabilities can be taken at face value; "
              "ranking (AUROC) and the locked-threshold results are unaffected.\n")
-    plot_calibration(cal, spec["name"], config.EVAL_DIR / f"calibration_{key}.png")
+    plot_calibration({"ResNet": (y, p_prim, cal["ResNet"]["slope"]),
+                      "RR baseline": (y[ok], p_base[ok], cal["RR baseline"]["slope"])},
+                     spec["name"], config.EVAL_DIR / f"calibration_{key}.png")
     L.append(f"Plot: `results/eval/calibration_{key}.png`\n")
 
     # subgroups: how many of these AF ECGs each model catches
