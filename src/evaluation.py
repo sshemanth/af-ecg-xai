@@ -1,6 +1,6 @@
 """Bootstrap confidence intervals and calibration."""
 import numpy as np
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 from scipy.special import expit, logit
 from sklearn.metrics import average_precision_score, roc_auc_score
 
@@ -112,17 +112,12 @@ def calibration(y, p, n_bins: int = config.CALIBRATION_BINS) -> dict:
         return -np.mean(y * np.log(q) + (1 - y) * np.log(1 - q))
 
     intercept = minimize_scalar(lambda a: nll(a, 1.0), bounds=(-20, 20), method="bounded").x
-    # slope (and its own intercept) by Newton steps on the 2-parameter logistic fit
-    a, b = 0.0, 1.0
-    X = np.column_stack([np.ones_like(lp), lp])
-    for _ in range(50):
-        q = expit(a + b * lp)
-        grad = X.T @ (y - q)
-        H = X.T @ (X * (q * (1 - q))[:, None]) + 1e-9 * np.eye(2)
-        step = np.linalg.solve(H, grad)
-        a, b = a + step[0], b + step[1]
-        if np.abs(step).max() < 1e-8:
-            break
+    # slope (with its own intercept): 2-parameter logistic fit by bounded
+    # quasi-Newton. Plain Newton steps can overshoot and run away when many
+    # probabilities sit at 0 or 1, so the search is kept to a sane range.
+    fit = minimize(lambda ab: nll(ab[0], ab[1]), x0=[0.0, 1.0], method="L-BFGS-B",
+                   bounds=[(-20, 20), (0.01, 50)])
+    b = fit.x[1]
 
     edges = np.linspace(0, 1, n_bins + 1)
     idx = np.clip(np.digitize(p, edges) - 1, 0, n_bins - 1)
