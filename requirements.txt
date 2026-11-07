@@ -1,0 +1,20 @@
+# Core
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+scikit-learn>=1.4
+matplotlib>=3.8
+tqdm>=4.66
+
+# ECG files and signal processing
+wfdb>=4.1
+neurokit2>=0.2.7
+
+# Deep learning (PyTorch with Apple MPS support)
+torch>=2.3
+
+# Explainability
+captum>=0.7
+
+# Statistics
+statsmodels>=0.14
