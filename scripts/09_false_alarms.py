@@ -1,6 +1,6 @@
-"""Step 9: which non-AF rhythms does the model mistake for AF on Chapman-Shaoxing?
+"""Step 9: which non-AF rhythms does the model mistake for AF on an external set?
 
-Chapman headers list every diagnosis per ECG (SNOMED-CT codes), so the
+Chapman-Shaoxing and Georgia headers list every diagnosis per ECG (SNOMED-CT codes), so the
 false alarms (non-AF ECGs scored above the locked threshold) can be split
 by rhythm. Two views:
 
@@ -11,7 +11,7 @@ by rhythm. Two views:
                 often each model raises a false alarm on them (an ECG can
                 carry several codes, so these rows overlap)
 
-The ResNet and the RR-only baseline are compared on the same ECGs. A last
+The network and the RR-only baseline are compared on the same ECGs. A last
 check compares SVT with sinus tachycardia within the same heart-rate bands,
 to tell hidden P-waves apart from a fast rate. Rhythms
 where atrial activity is hard to see (fast SVT, atrial tachycardia,
@@ -23,11 +23,14 @@ Only saved predictions and headers are read; no model is run, so this does
 not touch the test data again.
 
 Run from the project folder, after 06_evaluate.py:
-    python scripts/09_false_alarms.py
-    python scripts/09_false_alarms.py --model resnet_seed1   # another seed
+    python scripts/09_false_alarms.py                       # Chapman, primary ResNet
+    python scripts/09_false_alarms.py --dataset georgia
+    python scripts/09_false_alarms.py --arch inception      # primary InceptionTime
+    python scripts/09_false_alarms.py --model resnet_seed1  # one particular run
 
-Outputs: results/eval/false_alarms_chapman.csv and
-results/09_false_alarms_report.md
+Outputs: results/eval/false_alarms_<dataset>*.csv and
+results/09_false_alarms_report.md (Chapman, ResNet; other datasets or
+architectures add _<dataset> / _<arch>)
 """
 import argparse
 import json
@@ -42,7 +45,7 @@ import pandas as pd  # noqa: E402
 from src import config  # noqa: E402
 from src.evaluation import wilson_ci  # noqa: E402
 from src.labels import _parse_header  # noqa: E402
-from src.runs import find_resnet_runs, primary_run  # noqa: E402
+from src.runs import arch_label, arch_tag, find_runs, primary_run  # noqa: E402
 
 CODES = pd.read_csv(Path(__file__).resolve().parents[1] / "src" / "snomed_codes.csv",
                     dtype={"code": str})
@@ -75,13 +78,13 @@ def main_rhythm(dx: set) -> str:
     return "Other / no rhythm code"
 
 
-def read_dx(labels: pd.DataFrame) -> pd.Series:
+def read_dx(labels: pd.DataFrame, key: str) -> pd.Series:
     """Diagnosis codes per record, from each ECG's .hea header."""
     out = {}
     for rid, path in zip(labels["record_id"], labels["path"]):
         hea = Path(str(path) + ".hea")
         if not hea.exists():                     # data folder moved: search for it
-            hits = list(config.CHAPMAN_DIR.rglob(f"{rid}.hea"))
+            hits = list(config.CHALLENGE_DIRS[key].rglob(f"{rid}.hea"))
             hea = hits[0] if hits else None
         out[rid] = set(_parse_header(hea)["dx"]) if hea else set()
     return pd.Series(out, name="dx")
@@ -113,7 +116,7 @@ def mantel_haenszel(strata: list[tuple[int, int, int, int]]) -> tuple[float, flo
     return float(orr), float(np.exp(np.log(orr) - 1.96 * se)), float(np.exp(np.log(orr) + 1.96 * se))
 
 
-def heart_rate_check(df: pd.DataFrame) -> list[str]:
+def heart_rate_check(df: pd.DataFrame, net: str) -> list[str]:
     """SVT vs sinus tachycardia at the same heart rate. Both are fast and
     regular; in SVT the P-waves are usually hidden or abnormal, in sinus
     tachycardia they are normal. If SVT still gets far more false alarms
@@ -124,19 +127,19 @@ def heart_rate_check(df: pd.DataFrame) -> list[str]:
          "Both rhythms are fast and regular; in SVT the P-waves are usually hidden or "
          "abnormal, in sinus tachycardia they are normal. Same heart-rate band, "
          "different false-alarm rate → the P-waves, not the speed, drive the false alarms.\n",
-         "| Heart rate (bpm) | SVT ECGs | SVT ResNet rate | Sinus tach ECGs | Sinus tach ResNet rate | "
+         f"| Heart rate (bpm) | SVT ECGs | SVT {net} rate | Sinus tach ECGs | Sinus tach {net} rate | "
          "SVT RR baseline rate | Sinus tach RR baseline rate |",
          "|---|---|---|---|---|---|---|"]
     bands = HR_BANDS
-    strata = {"fa_resnet": [], "fa_rr": []}
+    strata = {"fa_net": [], "fa_rr": []}
     for lo, hi in zip(bands[:-1], bands[1:]):
         m = (sub["hr_mean"] >= lo) & (sub["hr_mean"] < hi)
         a, b = sub[m & (sub["rhythm"] == svt)], sub[m & (sub["rhythm"] == st)]
         if a.empty and b.empty:
             continue
         name = f"{lo:.0f}–{hi:.0f}" if np.isfinite(hi) else f"{lo:.0f}+"
-        L.append(f"| {name} | {len(a)} | {rate(int(a['fa_resnet'].sum()), len(a))} | {len(b)} | "
-                 f"{rate(int(b['fa_resnet'].sum()), len(b))} | "
+        L.append(f"| {name} | {len(a)} | {rate(int(a['fa_net'].sum()), len(a))} | {len(b)} | "
+                 f"{rate(int(b['fa_net'].sum()), len(b))} | "
                  f"{rate(int(a['fa_rr'].sum()), int(a['prob_rr_baseline'].notna().sum()))} | "
                  f"{rate(int(b['fa_rr'].sum()), int(b['prob_rr_baseline'].notna().sum()))} |")
         for col in strata:
@@ -146,7 +149,7 @@ def heart_rate_check(df: pd.DataFrame) -> list[str]:
             strata[col].append((int(aa[col].sum()), int((~aa[col]).sum()),
                                 int(bb[col].sum()), int((~bb[col]).sum())))
     L.append("")
-    for col, words in [("fa_resnet", "ResNet"), ("fa_rr", "RR baseline")]:
+    for col, words in [("fa_net", net), ("fa_rr", "RR baseline")]:
         orr, lo, hi = mantel_haenszel(strata[col])
         if orr != orr:
             L.append(f"- {words}: adjusted odds ratio can't be estimated (no false alarms, or none "
@@ -160,45 +163,57 @@ def heart_rate_check(df: pd.DataFrame) -> list[str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", choices=config.EXTERNAL_DATASETS, default="chapman")
+    ap.add_argument("--arch", choices=config.ARCHS, default="resnet")
     ap.add_argument("--model", default="primary",
-                    help="ResNet run name (e.g. resnet_seed1); default: the primary model")
+                    help="run name (e.g. resnet_seed1); default: the primary run of --arch")
     ap.add_argument("--top", type=int, default=20, help="rows in the every-code table")
     args = ap.parse_args()
 
-    runs = find_resnet_runs(verbose=False)
-    if not runs:
-        sys.exit("No trained ResNet runs found.")
-    by_name = {r["name"]: r for r in runs}
-    run = primary_run(runs) if args.model == "primary" else by_name.get(args.model)
-    if run is None:
-        sys.exit(f"{args.model} not found. Trained runs: {', '.join(by_name)}")
+    key = args.dataset
+    all_runs = [r for a in config.ARCHS for r in find_runs(a, verbose=False)]
+    by_name = {r["name"]: r for r in all_runs}
+    if args.model == "primary":
+        runs = [r for r in all_runs if r["arch"] == args.arch]
+        if not runs:
+            sys.exit(f"No trained {args.arch} runs found.")
+        run = primary_run(runs)
+    else:
+        run = by_name.get(args.model)
+        if run is None:
+            sys.exit(f"{args.model} not found. Trained runs: {', '.join(by_name)}")
+    net = arch_label(run["arch"])
+    name = config.DATASET_NAMES[key]
 
-    pred_f = config.EVAL_DIR / "predictions_chapman.csv"
+    pred_f = config.EVAL_DIR / f"predictions_{key}.csv"
     if not pred_f.exists():
         sys.exit(f"{pred_f} not found. Run scripts/06_evaluate.py first.")
     pred = pd.read_csv(pred_f, dtype={"record_id": str})
-    labels = pd.read_csv(config.PROCESSED_DIR / "chapman_labels.csv", dtype={"record_id": str})
-    rr = pd.read_csv(config.PROCESSED_DIR / "chapman_rr.csv", dtype={"record_id": str})
+    if f"prob_{run['name']}" not in pred:
+        sys.exit(f"{run['name']} has no predictions on {name}; run scripts/06_evaluate.py first.")
+    labels = pd.read_csv(config.PROCESSED_DIR / f"{key}_labels.csv", dtype={"record_id": str})
+    rr = pd.read_csv(config.PROCESSED_DIR / f"{key}_rr.csv", dtype={"record_id": str})
     thr_base = json.loads((config.MODELS_DIR / "rr_baseline" / "threshold.json").read_text())["threshold"]
 
     df = pred[pred["label"] == 0].merge(labels[["record_id", "path"]], on="record_id", how="left")
     df = df.merge(rr[["record_id", "rr_cv", "hr_mean"]], on="record_id", how="left")
     print(f"Reading headers for {len(df)} non-AF ECGs...")
-    df["dx"] = df["record_id"].map(read_dx(df))
+    df["dx"] = df["record_id"].map(read_dx(df, key))
     n_no_dx = int((df["dx"].apply(len) == 0).sum())
     df["rhythm"] = df["dx"].apply(main_rhythm)
-    df["fa_resnet"] = df[f"prob_{run['name']}"] >= run["threshold"]
+    df["fa_net"] = df[f"prob_{run['name']}"] >= run["threshold"]
     df["fa_rr"] = df["prob_rr_baseline"] >= thr_base
     rr_ok = df["prob_rr_baseline"].notna()
 
     out = df.drop(columns=["path"]).copy()
     out["dx"] = out["dx"].apply(lambda s: " ".join(sorted(s)))
-    out.to_csv(config.EVAL_DIR / "false_alarms_chapman.csv", index=False)
+    tag = arch_tag(run["arch"]) + ("" if args.model == "primary" else f"_{run['name']}")
+    out.to_csv(config.EVAL_DIR / f"false_alarms_{key}{tag}.csv", index=False)
 
-    n_fa = int(df["fa_resnet"].sum())
-    L = ["# False alarms on Chapman-Shaoxing by rhythm\n",
+    n_fa = int(df["fa_net"].sum())
+    L = [f"# False alarms on {name} by rhythm\n",
          f"Model: **{run['name']}** (threshold {run['threshold']:.3f}); RR baseline threshold "
-         f"{thr_base:.3f}. {len(df)} non-AF ECGs; ResNet false alarms: **{n_fa}** "
+         f"{thr_base:.3f}. {len(df)} non-AF ECGs; {net} false alarms: **{n_fa}** "
          f"({100 * n_fa / len(df):.1f}%), RR baseline: {int(df.loc[rr_ok, 'fa_rr'].sum())} "
          f"(of {int(rr_ok.sum())} it could score).\n"]
     if n_no_dx:
@@ -208,7 +223,7 @@ def main() -> None:
     L += ["## By main rhythm\n",
           "Each ECG counted once (first matching group, in the order listed). "
           "False-alarm rate with 95% Wilson CI.\n",
-          "| Main rhythm | Non-AF ECGs | Share of ResNet false alarms | ResNet false-alarm rate | "
+          f"| Main rhythm | Non-AF ECGs | Share of {net} false alarms | {net} false-alarm rate | "
           "RR baseline false-alarm rate | Median RR CV |",
           "|---|---|---|---|---|---|"]
     order = [g for g, _ in RHYTHM_GROUPS] + ["Other / no rhythm code"]
@@ -216,7 +231,7 @@ def main() -> None:
         m = df["rhythm"] == g
         if not m.any():
             continue
-        k = int(df.loc[m, "fa_resnet"].sum())
+        k = int(df.loc[m, "fa_net"].sum())
         mb = m & rr_ok
         L.append(f"| {g} | {int(m.sum())} | {100 * k / max(n_fa, 1):.1f}% | {rate(k, int(m.sum()))} | "
                  f"{rate(int(df.loc[mb, 'fa_rr'].sum()), int(mb.sum()))} | "
@@ -227,37 +242,38 @@ def main() -> None:
     rows = []
     for code in sorted(set().union(*df["dx"])):
         m = df["dx"].apply(lambda s, c=code: c in s)
-        k = int(df.loc[m, "fa_resnet"].sum())
+        k = int(df.loc[m, "fa_net"].sum())
         mb = m & rr_ok
         rows.append({"code": code, "abbr": ABBR.get(code, "?"), "name": NAMES.get(code, "unknown code"),
                      "n": int(m.sum()), "fa": k, "fa_rr": int(df.loc[mb, "fa_rr"].sum()), "n_rr": int(mb.sum())})
     codes = pd.DataFrame(rows).sort_values(["fa", "n"], ascending=False)
-    codes.to_csv(config.EVAL_DIR / "false_alarms_chapman_by_code.csv", index=False)
-    L += [f"## Every diagnosis code (top {args.top} by number of ResNet false alarms)\n",
+    codes.to_csv(config.EVAL_DIR / f"false_alarms_{key}_by_code{tag}.csv", index=False)
+    L += [f"## Every diagnosis code (top {args.top} by number of {net} false alarms)\n",
           "ECGs can carry several codes, so rows overlap. Code names from the "
           "PhysioNet/CinC Challenge 2021 mapping.\n",
-          "| Code | Diagnosis | Non-AF ECGs | ResNet false alarms | ResNet rate | RR baseline rate |",
+          f"| Code | Diagnosis | Non-AF ECGs | {net} false alarms | {net} rate | RR baseline rate |",
           "|---|---|---|---|---|---|"]
     for r in codes.head(args.top).itertuples():
         L.append(f"| {r.code} ({r.abbr}) | {r.name} | {r.n} | {r.fa} | {rate(r.fa, r.n)} | "
                  f"{rate(r.fa_rr, r.n_rr)} |")
-    L.append("\nFull table: `results/eval/false_alarms_chapman_by_code.csv`\n")
+    L.append(f"\nFull table: `results/eval/false_alarms_{key}_by_code{tag}.csv`\n")
 
     # timing of false alarms vs correct non-AF calls
-    tn = df[~df["fa_resnet"]]
-    fa = df[df["fa_resnet"]]
+    tn = df[~df["fa_net"]]
+    fa = df[df["fa_net"]]
     L += ["## Beat timing: false alarms vs correct non-AF calls\n",
           "| ECGs | n | Median RR CV | Median heart rate |", "|---|---|---|---|",
-          f"| ResNet false alarms | {len(fa)} | {fa['rr_cv'].median():.3f} | {fa['hr_mean'].median():.0f} |",
+          f"| {net} false alarms | {len(fa)} | {fa['rr_cv'].median():.3f} | {fa['hr_mean'].median():.0f} |",
           f"| Correct non-AF | {len(tn)} | {tn['rr_cv'].median():.3f} | {tn['hr_mean'].median():.0f} |",
-          f"\nBoth models wrong: {int((df['fa_resnet'] & df['fa_rr']).sum())}; "
-          f"ResNet only: {int((df['fa_resnet'] & ~df['fa_rr']).sum())}; "
-          f"RR baseline only: {int((~df['fa_resnet'] & df['fa_rr'] & rr_ok).sum())}.\n"]
+          f"\nBoth models wrong: {int((df['fa_net'] & df['fa_rr']).sum())}; "
+          f"{net} only: {int((df['fa_net'] & ~df['fa_rr']).sum())}; "
+          f"RR baseline only: {int((~df['fa_net'] & df['fa_rr'] & rr_ok).sum())}.\n"]
 
-    L += heart_rate_check(df)
+    L += heart_rate_check(df, net)
 
     text = "\n".join(L)
-    (config.RESULTS_DIR / "09_false_alarms_report.md").write_text(text)
+    suffix = ("" if key == "chapman" else f"_{key}") + tag
+    (config.RESULTS_DIR / f"09_false_alarms_report{suffix}.md").write_text(text)
     print("\n" + text)
 
 

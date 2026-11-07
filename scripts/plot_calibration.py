@@ -23,9 +23,10 @@ import pandas as pd  # noqa: E402
 from src import config  # noqa: E402
 from src.evaluation import calibration, calibration_bins  # noqa: E402
 from src.plots import plot_calibration  # noqa: E402
-from src.runs import find_resnet_runs, primary_run  # noqa: E402
+from src.runs import arch_label, find_runs, primary_run  # noqa: E402
 
-TITLES = {"ptbxl": "PTB-XL test (internal)", "chapman": "Chapman-Shaoxing (external)"}
+TITLES = {k: config.DATASET_NAMES[k] + (" test (internal)" if k == "ptbxl" else " (external)")
+          for k in config.ALL_DATASETS}
 
 
 def main() -> None:
@@ -34,7 +35,7 @@ def main() -> None:
     ap.add_argument("--strategy", choices=["uniform", "quantile"], default="uniform")
     args = ap.parse_args()
 
-    primary = primary_run(find_resnet_runs(verbose=False))
+    primaries = {a: primary_run(r) for a in config.ARCHS if (r := find_runs(a, verbose=False))}
     for key, title in TITLES.items():
         f = config.EVAL_DIR / f"predictions_{key}.csv"
         if not f.exists():
@@ -43,7 +44,10 @@ def main() -> None:
         pred = pd.read_csv(f)
         y = pred["label"].to_numpy()
         models = {}
-        for name, col in [("ResNet", f"prob_{primary['name']}"), ("RR baseline", "prob_rr_baseline")]:
+        cols = [(arch_label(a), f"prob_{p['name']}") for a, p in primaries.items()]
+        for name, col in cols + [("RR baseline", "prob_rr_baseline")]:
+            if col not in pred:                      # network not evaluated on this set yet
+                continue
             ok = pred[col].notna().to_numpy()
             models[name] = (y[ok], pred.loc[ok, col].to_numpy(), calibration(y[ok], pred.loc[ok, col])["slope"])
         out = config.EVAL_DIR / f"calibration_{key}.png"

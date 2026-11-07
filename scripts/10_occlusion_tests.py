@@ -20,9 +20,11 @@ Only the saved per-ECG tables from step 8 are read; no model is run.
 
 Run from the project folder, after 08_occlusion.py --seed all:
     python scripts/10_occlusion_tests.py
+    python scripts/10_occlusion_tests.py --arch inception
 
-Output: results/10_occlusion_tests_report.md
+Output: results/10_occlusion_tests_report.md (_<arch> for other architectures)
 """
+import argparse
 import sys
 from pathlib import Path
 
@@ -32,7 +34,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from src import config  # noqa: E402
-from src.runs import find_resnet_runs, primary_run  # noqa: E402
+from src.runs import arch_label, arch_tag, find_runs, primary_run  # noqa: E402
 from src.selection import DATASETS  # noqa: E402
 from src.stats import bh, boot_mean, fmt_p, paired_test  # noqa: E402
 
@@ -96,13 +98,16 @@ def flip_rate(res: pd.DataFrame, group: str, change: str, thr: float) -> float:
 
 
 def main() -> None:
-    runs = find_resnet_runs(verbose=False)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", choices=config.ARCHS, default="resnet")
+    args = ap.parse_args()
+    runs = find_runs(args.arch, verbose=False)
     if not runs:
-        sys.exit("No trained ResNet runs found.")
+        sys.exit(f"No trained {args.arch} runs found.")
     primary = primary_run(runs)
-    runs = sorted(runs, key=lambda r: r["seed"])
+    tag = arch_tag(args.arch)
 
-    L = ["# Paired tests for the swap and P-wave-removal results\n",
+    L = [f"# Paired tests for the swap and P-wave-removal results ({arch_label(args.arch)})\n",
          "Added after seeing the step 8 results. Mean difference = mean of (first Δ − second Δ), "
          "where Δ is the change in AF probability; positive means the first change pushes "
          "towards AF more. r = rank-biserial effect size (−1 to 1). * = adjusted p < 0.05 "
@@ -110,7 +115,7 @@ def main() -> None:
     for key, (title, _) in DATASETS.items():
         tables = {}
         for run in runs:
-            suffix = "" if run["name"] == primary["name"] else f"_{run['name']}"
+            suffix = tag if run["name"] == primary["name"] else f"_{run['name']}"
             f = OCC_DIR / f"occlusion_{key}{suffix}.csv"
             if f.exists():
                 tables[run["name"]] = (run, pd.read_csv(f, dtype={"record_id": str}))
@@ -162,7 +167,7 @@ def main() -> None:
         L.append("")
 
     text = "\n".join(L)
-    (config.RESULTS_DIR / "10_occlusion_tests_report.md").write_text(text)
+    (config.RESULTS_DIR / f"10_occlusion_tests_report{tag}.md").write_text(text)
     print("\n" + text)
 
 

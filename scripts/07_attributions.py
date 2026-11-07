@@ -5,7 +5,7 @@
   - windows defined from the R-peaks: atrial (P/f-waves), QRS, ST-T
   - share of positive attribution (evidence for AF) in each window,
     compared with how much time each window takes (enrichment)
-  - AF vs non-AF, correct vs missed, PTB-XL vs Chapman
+  - AF vs non-AF, correct vs missed, PTB-XL vs each external set
   - a class-balanced random sample plus all low-RR-variability,
     near-regular and paced AF ECGs
   - agreement between the two methods, and stability under small noise
@@ -21,9 +21,11 @@ Run from the project folder:
     python scripts/07_attributions.py
     python scripts/07_attributions.py --dataset chapman
     python scripts/07_attributions.py --n-per-class 20      # quick check
+    python scripts/07_attributions.py --arch inception      # second architecture
 
 Outputs: results/xai/ (per-ECG table, example plots) and
-results/07_attribution_report.md
+results/07_attribution_report.md (07_attribution_report_<arch>.md for
+other architectures)
 """
 import argparse
 import sys
@@ -43,12 +45,13 @@ from tqdm import tqdm  # noqa: E402
 from src import config  # noqa: E402
 from src.data import ECGDataset, load_norm_stats  # noqa: E402
 from src.model import pick_device  # noqa: E402
-from src.runs import find_resnet_runs, load_model, primary_run  # noqa: E402
+from src.runs import arch_tag, find_runs, load_model, primary_run  # noqa: E402
 from src.selection import DATASETS, GROUPS, select  # noqa: E402
-from src.windows import ATRIAL, NAMES, OUTSIDE, QRS, STT, beat_windows, shares, t_wave_ends  # noqa: E402
+from src.windows import ATRIAL, OUTSIDE, QRS, STT, beat_windows, shares, t_wave_ends  # noqa: E402
+from src.xai import Explainer, spearman  # noqa: E402
 
 LEAD_II = config.LEADS.index("II")
-from src.xai import Explainer, spearman  # noqa: E402
+
 
 def explain(key: str, sel: pd.DataFrame, explainer: Explainer, noise_std: np.ndarray,
             batch: int) -> tuple[pd.DataFrame, dict]:
@@ -99,7 +102,7 @@ def explain(key: str, sel: pd.DataFrame, explainer: Explainer, noise_std: np.nda
     return sel.merge(pd.DataFrame(rows), on="record_id"), examples
 
 
-def plot_examples(key: str, examples: dict, mean: np.ndarray, std: np.ndarray) -> Path:
+def plot_examples(key: str, examples: dict, mean: np.ndarray, std: np.ndarray, tag: str = "") -> Path:
     leads = [config.LEADS.index("II"), config.LEADS.index("V1")]
     t = np.arange(config.N_SAMPLES) / config.TARGET_FS
     colours = {ATRIAL: "#4c9be8", QRS: "#e8804c", STT: "#9ad17a"}
@@ -137,7 +140,7 @@ def plot_examples(key: str, examples: dict, mean: np.ndarray, std: np.ndarray) -
                    color="grey", alpha=0.25, lw=0)
     axes[-1, 0].set_xlabel("seconds (grey = edge margins, left out)")
     fig.tight_layout()
-    out = config.XAI_DIR / f"examples_{key}.png"
+    out = config.XAI_DIR / f"examples_{key}{tag}.png"
     fig.savefig(out, dpi=110)
     plt.close(fig)
     return out
@@ -204,23 +207,25 @@ def report_dataset(key: str, res: pd.DataFrame) -> list[str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["ptbxl", "chapman", "all"], default="all")
+    ap.add_argument("--dataset", choices=config.ALL_DATASETS + ["all"], default="all")
+    ap.add_argument("--arch", choices=config.ARCHS, default="resnet")
     ap.add_argument("--n-per-class", type=int, default=config.XAI_N_PER_CLASS)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--device", default="auto")
     args = ap.parse_args()
 
-    runs = find_resnet_runs(verbose=False)
+    runs = find_runs(args.arch, verbose=False)
     if not runs:
-        sys.exit("No trained ResNet runs found.")
+        sys.exit(f"No trained {args.arch} runs found.")
     primary = primary_run(runs)
+    tag = arch_tag(args.arch)
     device = pick_device(args.device)
     explainer = Explainer(load_model(primary, device), device)
     mean, std = load_norm_stats()
     noise_std = (config.XAI_NOISE_MV / std).astype(np.float32)   # same noise in mV for every lead
     config.XAI_DIR.mkdir(parents=True, exist_ok=True)
 
-    keys = ["ptbxl", "chapman"] if args.dataset == "all" else [args.dataset]
+    keys = config.ALL_DATASETS if args.dataset == "all" else [args.dataset]
     keys = [k for k in keys if (config.EVAL_DIR / f"predictions_{k}.csv").exists() or args.dataset != "all"]
     lines = ["# Attribution: where does the model look?\n",
              f"Model: **{primary['name']}** (primary). Integrated Gradients ({config.XAI_IG_STEPS} steps, "
@@ -231,25 +236,29 @@ def main() -> None:
     for key in keys:
         sel = select(key, args.n_per_class, primary)
         res, examples = explain(key, sel, explainer, noise_std, args.batch)
-        res.to_csv(config.XAI_DIR / f"attributions_{key}.csv", index=False)
+        res.to_csv(config.XAI_DIR / f"attributions_{key}{tag}.csv", index=False)
         results[key] = res
         lines += report_dataset(key, res)
         if examples:
-            p = plot_examples(key, examples, mean, std)
+            p = plot_examples(key, examples, mean, std, tag)
             lines.append(f"Example plots: `{p.relative_to(config.ROOT)}`\n")
 
-    if len(results) == 2:
+    externals = [k for k in results if k != "ptbxl"]
+    if "ptbxl" in results and externals:
+        lines.append("## PTB-XL vs external sets (does the attention replicate across hospitals?)\n")
         a = results["ptbxl"][results["ptbxl"]["grp_af_random"]]["ig_atrial_share"].dropna()
-        b = results["chapman"][results["chapman"]["grp_af_random"]]["ig_atrial_share"].dropna()
-        rng = np.random.default_rng(config.SEED)
-        d = [rng.choice(a, len(a)).mean() - rng.choice(b, len(b)).mean() for _ in range(2000)]
-        lines += ["## PTB-XL vs Chapman (does the attention replicate across hospitals?)\n",
-                  f"IG atrial share in random AF ECGs: PTB-XL {a.mean():.3f}, Chapman {b.mean():.3f}; "
-                  f"difference {a.mean() - b.mean():+.3f} (95% CI {np.percentile(d, 2.5):+.3f} to "
-                  f"{np.percentile(d, 97.5):+.3f}).\n"]
+        for k in externals:
+            b = results[k][results[k]["grp_af_random"]]["ig_atrial_share"].dropna()
+            rng = np.random.default_rng(config.SEED)
+            d = [rng.choice(a, len(a)).mean() - rng.choice(b, len(b)).mean() for _ in range(2000)]
+            lines.append(f"- IG atrial share in random AF ECGs: PTB-XL {a.mean():.3f}, "
+                         f"{config.DATASET_NAMES[k]} {b.mean():.3f}; difference {a.mean() - b.mean():+.3f} "
+                         f"(95% CI {np.percentile(d, 2.5):+.3f} to {np.percentile(d, 97.5):+.3f})")
+        lines.append("")
 
     text = "\n".join(lines)
-    (config.RESULTS_DIR / "07_attribution_report.md").write_text(text)
+    suffix = tag + ("" if args.dataset == "all" else f"_{args.dataset}")
+    (config.RESULTS_DIR / f"07_attribution_report{suffix}.md").write_text(text)
     print("\n" + text)
 
 

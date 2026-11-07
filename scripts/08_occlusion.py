@@ -40,10 +40,14 @@ Run from the project folder, after 06_evaluate.py:
     python scripts/08_occlusion.py                    # primary model
     python scripts/08_occlusion.py --seed all         # every seed
     python scripts/08_occlusion.py --seed 1,2         # chosen seeds (primary always included)
+    python scripts/08_occlusion.py --arch inception --seed all   # second architecture
+    python scripts/08_occlusion.py --dataset georgia --seed all  # one dataset (own report files)
 
 Outputs: results/occlusion/ (per-ECG tables, example plot),
 results/08_occlusion_report.md (primary model) and, with more than one
-seed, results/08_occlusion_seeds_report.md (results side by side)
+seed, results/08_occlusion_seeds_report.md (results side by side). Other
+architectures add _<arch> to every file name; a single --dataset adds
+_<dataset> to the report names.
 """
 import argparse
 import sys
@@ -65,7 +69,7 @@ from src.data import ECGDataset, load_norm_stats  # noqa: E402
 from src.model import pick_device  # noqa: E402
 from src.perturb import (matched_control, plausible, regularise_rr,  # noqa: E402
                          remove_windows, swap_atrial)
-from src.runs import find_resnet_runs, load_model, primary_run  # noqa: E402
+from src.runs import arch_tag, find_runs, load_model, primary_run  # noqa: E402
 from src.selection import DATASETS, GROUPS, held_out_table, select  # noqa: E402
 from src.stats import bh, boot_mean, fmt_p, paired_test  # noqa: E402
 from src.windows import ATRIAL, QRS, STT, beat_windows, t_wave_ends  # noqa: E402
@@ -271,7 +275,7 @@ def seeds_report(key: str, res: dict, runs: dict) -> list[str]:
     return L
 
 
-def plot_example(key: str, ex: dict, mean: np.ndarray, std: np.ndarray) -> Path:
+def plot_example(key: str, ex: dict, mean: np.ndarray, std: np.ndarray, tag: str = "") -> Path:
     t = np.arange(config.N_SAMPLES) / config.TARGET_FS
     li = config.LEADS.index("V1")
     show = ["original"] + MAIN
@@ -289,25 +293,59 @@ def plot_example(key: str, ex: dict, mean: np.ndarray, std: np.ndarray) -> Path:
     axes[0].set_title(f"{key} {ex['id']} | lead V1 | blue = atrial windows", fontsize=9, loc="left")
     axes[-1].set_xlabel("seconds")
     fig.tight_layout()
-    out = OUT_DIR / f"example_{key}.png"
+    out = OUT_DIR / f"example_{key}{tag}.png"
     fig.savefig(out, dpi=110)
     plt.close(fig)
     return out
 
 
+def compare_with_ptbxl(results: dict, tag: str) -> list[str]:
+    """PTB-XL vs each external set, detected AF (random sample). Tables not
+    run this time are read from earlier runs of this step."""
+    def table(k):
+        if k in results:
+            return results[k]
+        f = OUT_DIR / f"occlusion_{k}{tag}.csv"
+        return pd.read_csv(f, dtype={"record_id": str}) if f.exists() else None
+
+    base = table("ptbxl")
+    others = [(k, table(k)) for k in config.EXTERNAL_DATASETS]
+    others = [(k, t) for k, t in others if t is not None]
+    if base is None or not others:
+        return []
+    pick = lambda r, name: r[r["grp_af_random"] & r["pred_af"] & (r["label"] == 1)][f"delta_{name}"].dropna().to_numpy()
+    L = []
+    for k, other in others:
+        L += [f"## PTB-XL vs {config.DATASET_NAMES[k]} (detected AF, random sample)\n",
+              f"| Change | PTB-XL mean Δ | {config.DATASET_NAMES[k]} mean Δ | Difference (95% CI) |",
+              "|---|---|---|---|"]
+        rng = np.random.default_rng(config.SEED)
+        for name in MAIN:
+            a, b = pick(base, name), pick(other, name)
+            if len(a) < 3 or len(b) < 3:
+                continue
+            d = [rng.choice(a, len(a)).mean() - rng.choice(b, len(b)).mean() for _ in range(2000)]
+            L.append(f"| {name} | {a.mean():+.3f} | {b.mean():+.3f} | {a.mean() - b.mean():+.3f} "
+                     f"({np.percentile(d, 2.5):+.3f} to {np.percentile(d, 97.5):+.3f}) |")
+        L.append("")
+    return L
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["ptbxl", "chapman", "all"], default="all")
+    ap.add_argument("--dataset", choices=config.ALL_DATASETS + ["all"], default="all")
+    ap.add_argument("--arch", choices=config.ARCHS, default="resnet")
     ap.add_argument("--n-per-class", type=int, default=config.XAI_N_PER_CLASS)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", default="primary",
                     help="'primary' (default), 'all', or seeds such as 1,2")
     args = ap.parse_args()
 
-    runs = find_resnet_runs(verbose=False)
+    runs = find_runs(args.arch, verbose=False)
     if not runs:
-        sys.exit("No trained ResNet runs found.")
+        sys.exit(f"No trained {args.arch} runs found.")
     primary = primary_run(runs)
+    tag = arch_tag(args.arch)
     if args.seed == "primary":
         chosen = [primary]
     elif args.seed == "all":
@@ -325,7 +363,7 @@ def main() -> None:
     mean, std = load_norm_stats()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    keys = ["ptbxl", "chapman"] if args.dataset == "all" else [args.dataset]
+    keys = config.ALL_DATASETS if args.dataset == "all" else [args.dataset]
     keys = [k for k in keys if (config.EVAL_DIR / f"predictions_{k}.csv").exists() or args.dataset != "all"]
     lines = ["# Occlusion and counterfactual tests\n",
              f"Model: **{primary['name']}** (primary). Does the model need atrial activity, "
@@ -336,7 +374,7 @@ def main() -> None:
     for key in keys:
         by_run, failed, ex = run_dataset(key, models, primary, device, args.n_per_class)
         for name, r in by_run.items():
-            suffix = "" if name == primary["name"] else f"_{name}"
+            suffix = tag if name == primary["name"] else f"_{name}"
             r.to_csv(OUT_DIR / f"occlusion_{key}{suffix}.csv", index=False)
         res = by_run[primary["name"]]
         results[key] = res
@@ -344,32 +382,18 @@ def main() -> None:
             seed_lines += seeds_report(key, by_run, run_info)
         lines += report_dataset(key, res, failed, primary["threshold"])
         if ex is not None:
-            p = plot_example(key, ex, mean, std)
+            p = plot_example(key, ex, mean, std, tag)
             lines.append(f"Example: `{p.relative_to(config.ROOT)}`\n")
 
-    if len(results) == 2:
-        lines.append("## PTB-XL vs Chapman (detected AF, random sample)\n")
-        lines += ["| Change | PTB-XL mean Δ | Chapman mean Δ | Difference (95% CI) |", "|---|---|---|---|"]
-        rng = np.random.default_rng(config.SEED)
-        for name in MAIN:
-            vals = []
-            for k in ["ptbxl", "chapman"]:
-                r = results[k]
-                vals.append(r[r["grp_af_random"] & r["pred_af"] & (r["label"] == 1)][f"delta_{name}"].dropna().to_numpy())
-            a, b = vals
-            if len(a) < 3 or len(b) < 3:
-                continue
-            d = [rng.choice(a, len(a)).mean() - rng.choice(b, len(b)).mean() for _ in range(2000)]
-            lines.append(f"| {name} | {a.mean():+.3f} | {b.mean():+.3f} | {a.mean() - b.mean():+.3f} "
-                         f"({np.percentile(d, 2.5):+.3f} to {np.percentile(d, 97.5):+.3f}) |")
-        lines.append("")
+    lines += compare_with_ptbxl(results, tag)
 
     text = "\n".join(lines)
-    (config.RESULTS_DIR / "08_occlusion_report.md").write_text(text)
+    suffix = tag + ("" if args.dataset == "all" else f"_{args.dataset}")
+    (config.RESULTS_DIR / f"08_occlusion_report{suffix}.md").write_text(text)
     print("\n" + text)
     if len(models) > 1:
         text = "\n".join(seed_lines)
-        (config.RESULTS_DIR / "08_occlusion_seeds_report.md").write_text(text)
+        (config.RESULTS_DIR / f"08_occlusion_seeds_report{suffix}.md").write_text(text)
         print("\n" + text)
 
 
