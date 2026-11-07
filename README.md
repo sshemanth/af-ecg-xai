@@ -158,6 +158,15 @@ python scripts/06_evaluate.py
 
 Held-out data is meant to be used once: each dataset is locked after evaluation (`results/eval/LOCK_<dataset>.json`) and the script refuses to evaluate it again without `--force`. It also stops until all seeds are trained (override with `--partial`).
 
+Calibration plots show each bin's observed AF rate with a 95% CI and the number of ECGs in the bin, plus a histogram of predicted probabilities, so points resting on a few ECGs are easy to spot. To redraw them from the saved predictions without running any model (and without touching the lock):
+
+```bash
+python scripts/plot_calibration.py
+python scripts/plot_calibration.py --strategy quantile
+```
+
+The second uses bins with equal numbers of ECGs. Bin tables: `results/eval/calibration_bins_<dataset>.csv`.
+
 ### 7. Attribution
 
 ```bash
@@ -172,6 +181,7 @@ The first command is a quick check. The script explains the primary model on hel
 ```bash
 python scripts/08_occlusion.py --n-per-class 20
 python scripts/08_occlusion.py
+python scripts/08_occlusion.py --seed all
 ```
 
 The first command is a quick check. On the same held-out ECGs as step 7, the primary model scores each ECG and a set of controlled changes; the outcome is the change in AF probability:
@@ -186,6 +196,17 @@ The first command is a quick check. On the same held-out ECGs as step 7, the pri
 | `atrial_removed_<lead>` | Atrial windows removed in one lead only |
 
 If removing atrial activity lowers the AF probability more than regularising the rhythm (and more than the matched control), the model depends on atrial morphology; the reverse means it depends on timing. Every changed ECG is checked automatically (finite values, plausible amplitude, no jumps) and failures are counted. Statistics are paired: Wilcoxon signed-rank tests, rank-biserial effect sizes, bootstrap 95% CIs and Benjamini-Hochberg correction across comparisons and across leads. Report: `results/08_occlusion_report.md`; example plot: `results/occlusion/example_<dataset>.png`.
+
+`--seed all` (or e.g. `--seed 1,2`) runs the same changed ECGs through every trained seed, to check the result is not specific to the primary model. Each ECG is changed once and scored by all seeds, so it takes only a little longer than one seed. The primary model's report is written as usual; `results/08_occlusion_seeds_report.md` puts the seeds side by side (mean change per seed, and the paired comparisons with how many seeds reach adjusted p < 0.05). Per-seed tables: `results/occlusion/occlusion_<dataset>_resnet_seed<N>.csv`.
+
+### 9. False alarms by rhythm (Chapman)
+
+```bash
+python scripts/09_false_alarms.py
+python scripts/09_false_alarms.py --model resnet_seed1
+```
+
+Chapman headers list every diagnosis per ECG (SNOMED-CT codes), so the false alarms can be split by rhythm: sinus rhythm, sinus brady/tachycardia, sinus arrhythmia, premature atrial or ventricular beats, supraventricular tachycardia (SVT, atrial tachycardia, AVNRT, AVRT), wandering pacemaker, paced. For each rhythm the report gives the false-alarm rate of the ResNet and the RR baseline (95% Wilson CI), a table for every diagnosis code, and the beat timing of false alarms vs correct non-AF calls. Only saved predictions and the raw headers are read; no model is run. Code names come from the PhysioNet/CinC Challenge 2021 mapping (`src/snomed_codes.csv`). Outputs: `results/09_false_alarms_report.md`, `results/eval/false_alarms_chapman*.csv`.
 
 ### Check the setup at any time
 
@@ -233,7 +254,9 @@ af-ecg-xai/
 │   ├── 05_train.py                train the 1D ResNet
 │   ├── 06_evaluate.py             held-out metrics, CIs, calibration, subgroups
 │   ├── 07_attributions.py         Integrated Gradients, Grad-CAM, window shares
-│   ├── 08_occlusion.py            occlusion and counterfactual tests
+│   ├── 08_occlusion.py            occlusion and counterfactual tests, one or all seeds
+│   ├── 09_false_alarms.py         Chapman false alarms by rhythm
+│   ├── plot_calibration.py        calibration plots from saved predictions
 │   ├── plot_examples.py           ECGs with R-peaks, for visual checks
 │   └── plot_raw_vs_filtered.py    one ECG before and after filtering
 ├── src/
@@ -246,6 +269,8 @@ af-ecg-xai/
 │   ├── model.py                   1D ResNet
 │   ├── metrics.py                 metrics and threshold rule
 │   ├── evaluation.py              bootstrap CIs and calibration
+│   ├── plots.py                   calibration plot
+│   ├── snomed_codes.csv           SNOMED-CT code names (Challenge 2021)
 │   ├── runs.py                    trained runs and primary model
 │   ├── selection.py               which held-out ECGs are analysed
 │   ├── windows.py                 atrial / QRS / ST-T windows, T-wave ends
