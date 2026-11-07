@@ -11,7 +11,9 @@ by rhythm. Two views:
                 often each model raises a false alarm on them (an ECG can
                 carry several codes, so these rows overlap)
 
-The ResNet and the RR-only baseline are compared on the same ECGs. Rhythms
+The ResNet and the RR-only baseline are compared on the same ECGs. A last
+check compares SVT with sinus tachycardia within the same heart-rate bands,
+to tell hidden P-waves apart from a fast rate. Rhythms
 where atrial activity is hard to see (fast SVT, atrial tachycardia,
 wandering pacemaker) are the ones to watch if the model relies on atrial
 morphology; frequent premature beats are the ones to watch if it relies on
@@ -34,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from src import config  # noqa: E402
@@ -62,6 +65,9 @@ RHYTHM_GROUPS = [
 ]
 
 
+HR_BANDS = [0, 100, 120, 140, 160, np.inf]
+
+
 def main_rhythm(dx: set) -> str:
     for name, codes in RHYTHM_GROUPS:
         if dx & set(codes):
@@ -86,6 +92,70 @@ def rate(k: int, n: int) -> str:
         return "–"
     lo, hi = wilson_ci(k, n)
     return f"{k}/{n} = {k / n:.2f} ({lo:.2f}–{hi:.2f})"
+
+
+def mantel_haenszel(strata: list[tuple[int, int, int, int]]) -> tuple[float, float, float]:
+    """Common odds ratio across strata, with a 95% CI (Robins-Breslow-Greenland).
+    Each stratum: (a, b, c, d) = (group 1 yes, group 1 no, group 2 yes, group 2 no)."""
+    R = S = PR = PS_QR = QS = 0.0
+    for a, b, c, d in strata:
+        n = a + b + c + d
+        if n == 0:
+            continue
+        r, s = a * d / n, b * c / n
+        p, q = (a + d) / n, (b + c) / n
+        R, S = R + r, S + s
+        PR, PS_QR, QS = PR + p * r, PS_QR + p * s + q * r, QS + q * s
+    if R == 0 or S == 0:
+        return float("nan"), float("nan"), float("nan")
+    se = np.sqrt(PR / (2 * R * R) + PS_QR / (2 * R * S) + QS / (2 * S * S))
+    orr = R / S
+    return float(orr), float(np.exp(np.log(orr) - 1.96 * se)), float(np.exp(np.log(orr) + 1.96 * se))
+
+
+def heart_rate_check(df: pd.DataFrame) -> list[str]:
+    """SVT vs sinus tachycardia at the same heart rate. Both are fast and
+    regular; in SVT the P-waves are usually hidden or abnormal, in sinus
+    tachycardia they are normal. If SVT still gets far more false alarms
+    within the same heart-rate band, speed alone does not explain them."""
+    svt, st = RHYTHM_GROUPS[1][0], "Sinus tachycardia"
+    sub = df[df["rhythm"].isin([svt, st]) & df["hr_mean"].notna()]
+    L = ["## SVT vs sinus tachycardia at the same heart rate\n",
+         "Both rhythms are fast and regular; in SVT the P-waves are usually hidden or "
+         "abnormal, in sinus tachycardia they are normal. Same heart-rate band, "
+         "different false-alarm rate → the P-waves, not the speed, drive the false alarms.\n",
+         "| Heart rate (bpm) | SVT ECGs | SVT ResNet rate | Sinus tach ECGs | Sinus tach ResNet rate | "
+         "SVT RR baseline rate | Sinus tach RR baseline rate |",
+         "|---|---|---|---|---|---|---|"]
+    bands = HR_BANDS
+    strata = {"fa_resnet": [], "fa_rr": []}
+    for lo, hi in zip(bands[:-1], bands[1:]):
+        m = (sub["hr_mean"] >= lo) & (sub["hr_mean"] < hi)
+        a, b = sub[m & (sub["rhythm"] == svt)], sub[m & (sub["rhythm"] == st)]
+        if a.empty and b.empty:
+            continue
+        name = f"{lo:.0f}–{hi:.0f}" if np.isfinite(hi) else f"{lo:.0f}+"
+        L.append(f"| {name} | {len(a)} | {rate(int(a['fa_resnet'].sum()), len(a))} | {len(b)} | "
+                 f"{rate(int(b['fa_resnet'].sum()), len(b))} | "
+                 f"{rate(int(a['fa_rr'].sum()), int(a['prob_rr_baseline'].notna().sum()))} | "
+                 f"{rate(int(b['fa_rr'].sum()), int(b['prob_rr_baseline'].notna().sum()))} |")
+        for col in strata:
+            aa, bb = a, b
+            if col == "fa_rr":                      # only ECGs the baseline could score
+                aa, bb = a[a["prob_rr_baseline"].notna()], b[b["prob_rr_baseline"].notna()]
+            strata[col].append((int(aa[col].sum()), int((~aa[col]).sum()),
+                                int(bb[col].sum()), int((~bb[col]).sum())))
+    L.append("")
+    for col, words in [("fa_resnet", "ResNet"), ("fa_rr", "RR baseline")]:
+        orr, lo, hi = mantel_haenszel(strata[col])
+        if orr != orr:
+            L.append(f"- {words}: adjusted odds ratio can't be estimated (no false alarms, or none "
+                     f"missing, in one rhythm across the shared bands)")
+            continue
+        L.append(f"- {words}: odds of a false alarm, SVT vs sinus tachycardia, adjusted for heart-rate "
+                 f"band (Mantel-Haenszel): **{orr:.1f}** (95% CI {lo:.1f} to {hi:.1f})")
+    L.append("\nBands with ECGs of only one rhythm add nothing to the adjusted odds ratio.\n")
+    return L
 
 
 def main() -> None:
@@ -183,6 +253,8 @@ def main() -> None:
           f"\nBoth models wrong: {int((df['fa_resnet'] & df['fa_rr']).sum())}; "
           f"ResNet only: {int((df['fa_resnet'] & ~df['fa_rr']).sum())}; "
           f"RR baseline only: {int((~df['fa_resnet'] & df['fa_rr'] & rr_ok).sum())}.\n"]
+
+    L += heart_rate_check(df)
 
     text = "\n".join(L)
     (config.RESULTS_DIR / "09_false_alarms_report.md").write_text(text)

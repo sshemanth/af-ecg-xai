@@ -206,7 +206,15 @@ python scripts/09_false_alarms.py
 python scripts/09_false_alarms.py --model resnet_seed1
 ```
 
-Chapman headers list every diagnosis per ECG (SNOMED-CT codes), so the false alarms can be split by rhythm: sinus rhythm, sinus brady/tachycardia, sinus arrhythmia, premature atrial or ventricular beats, supraventricular tachycardia (SVT, atrial tachycardia, AVNRT, AVRT), wandering pacemaker, paced. For each rhythm the report gives the false-alarm rate of the ResNet and the RR baseline (95% Wilson CI), a table for every diagnosis code, and the beat timing of false alarms vs correct non-AF calls. Only saved predictions and the raw headers are read; no model is run. Code names come from the PhysioNet/CinC Challenge 2021 mapping (`src/snomed_codes.csv`). Outputs: `results/09_false_alarms_report.md`, `results/eval/false_alarms_chapman*.csv`.
+Chapman headers list every diagnosis per ECG (SNOMED-CT codes), so the false alarms can be split by rhythm: sinus rhythm, sinus brady/tachycardia, sinus arrhythmia, premature atrial or ventricular beats, supraventricular tachycardia (SVT, atrial tachycardia, AVNRT, AVRT), wandering pacemaker, paced. For each rhythm the report gives the false-alarm rate of the ResNet and the RR baseline (95% Wilson CI), a table for every diagnosis code, the beat timing of false alarms vs correct non-AF calls, and SVT vs sinus tachycardia within the same heart-rate bands (Mantel-Haenszel odds ratio), to tell hidden P-waves apart from a fast rate. Only saved predictions and the raw headers are read; no model is run. Code names come from the PhysioNet/CinC Challenge 2021 mapping (`src/snomed_codes.csv`). Outputs: `results/09_false_alarms_report.md`, `results/eval/false_alarms_chapman*.csv`.
+
+### 10. Paired tests for the swap and P-wave removal
+
+```bash
+python scripts/10_occlusion_tests.py
+```
+
+Run after `08_occlusion.py --seed all`. In AF ECGs, flattening the atrial windows changes little, since there were no normal P-waves to begin with. This step tests where the atrial evidence shows: removing P-waves from (or putting f-waves into) non-AF ECGs, and putting sinus P-waves into AF ECGs, each against no change, the matched control and a perfectly regular rhythm. It gives mean differences with bootstrap 95% CIs, rank-biserial effect sizes and Benjamini-Hochberg adjusted p-values for every seed, plus the share of ECGs whose call changes at each seed's locked threshold. These tests were added after the step 8 results and are labelled as such. Only the saved step 8 tables are read; seed tables from an older step 8 run are detected and left out. Report: `results/10_occlusion_tests_report.md`.
 
 ### Check the setup at any time
 
@@ -256,6 +264,7 @@ af-ecg-xai/
 │   ├── 07_attributions.py         Integrated Gradients, Grad-CAM, window shares
 │   ├── 08_occlusion.py            occlusion and counterfactual tests, one or all seeds
 │   ├── 09_false_alarms.py         Chapman false alarms by rhythm
+│   ├── 10_occlusion_tests.py      paired tests for swap and P-wave removal, every seed
 │   ├── plot_calibration.py        calibration plots from saved predictions
 │   ├── plot_examples.py           ECGs with R-peaks, for visual checks
 │   └── plot_raw_vs_filtered.py    one ECG before and after filtering
@@ -275,6 +284,7 @@ af-ecg-xai/
 │   ├── selection.py               which held-out ECGs are analysed
 │   ├── windows.py                 atrial / QRS / ST-T windows, T-wave ends
 │   ├── xai.py                     attribution methods
+│   ├── stats.py                   paired tests, bootstrap, multiple-testing correction
 │   └── perturb.py                 occlusion and counterfactual changes
 ├── data/raw/                      downloaded data (not tracked)
 ├── data/processed/                label tables, signal arrays (not tracked)
