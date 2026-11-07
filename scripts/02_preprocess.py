@@ -1,12 +1,12 @@
 """Step 2: load, check, filter and save all ECG signals.
 
 Run from the project folder, after 01_count_labels.py:
-    python scripts/02_preprocess.py                  # both datasets
-    python scripts/02_preprocess.py --dataset ptbxl  # PTB-XL only
-    python scripts/02_preprocess.py --limit 200      # quick test run
+    python scripts/02_preprocess.py                    # every dataset with a label table
+    python scripts/02_preprocess.py --dataset georgia  # one dataset (own report file)
+    python scripts/02_preprocess.py --limit 200        # quick test run
 
-Run Chapman only once its download has finished; files still missing
-would otherwise be counted as "unreadable".
+Run an external set only once its download has finished; files still
+missing would otherwise be counted as "unreadable".
 
 Outputs (data/processed/):
     <dataset>_signals.npy   float16 [n, 12, 5000], filtered, NOT normalised
@@ -181,13 +181,15 @@ def report_section(title: str, info: dict) -> list:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["ptbxl", "chapman", "all"], default="all")
+    ap.add_argument("--dataset", choices=config.ALL_DATASETS + ["all"], default="all")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     ap.add_argument("--limit", type=int, default=None,
                     help="process only about this many ECGs (for a quick test)")
     args = ap.parse_args()
 
-    names = ["ptbxl", "chapman"] if args.dataset == "all" else [args.dataset]
+    names = config.ALL_DATASETS if args.dataset == "all" else [args.dataset]
+    if args.dataset == "all":                       # skip datasets not downloaded yet
+        names = [n for n in names if (config.PROCESSED_DIR / f"{n}_labels.csv").exists()]
     lines = ["# Preprocessing report\n",
              f"Common rate {config.TARGET_FS} Hz, {config.SIGNAL_SECONDS} s; "
              f"band-pass {config.FILTER_LOW_HZ}-{config.FILTER_HIGH_HZ} Hz "
@@ -198,7 +200,7 @@ def main() -> None:
 
     for name in names:
         info = process(name, args.workers, args.limit)
-        lines += report_section({"ptbxl": "PTB-XL", "chapman": "Chapman-Shaoxing"}[name], info)
+        lines += report_section(config.DATASET_NAMES[name], info)
         if name == "ptbxl":
             stats = norm_stats(info)
             path = config.PROCESSED_DIR / "norm_stats.json"
@@ -211,7 +213,9 @@ def main() -> None:
 
     report = "\n".join(lines)
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    (config.RESULTS_DIR / "02_preprocess_report.md").write_text(report)
+    # one dataset on its own gets its own report, so earlier reports are kept
+    suffix = "" if args.dataset == "all" else f"_{args.dataset}"
+    (config.RESULTS_DIR / f"02_preprocess_report{suffix}.md").write_text(report)
     print("\n" + report)
 
 

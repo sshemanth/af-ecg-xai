@@ -70,7 +70,7 @@ def load_ptbxl(ptbxl_dir: Path = config.PTBXL_DIR) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Chapman-Shaoxing (PhysioNet/CinC Challenge 2021 copy)
+# External sets: Chapman-Shaoxing and Georgia (PhysioNet/CinC Challenge 2021)
 # ---------------------------------------------------------------------------
 def _parse_header(hea_path: Path) -> dict:
     """Read sampling rate, length, lead count, age, sex and diagnosis codes
@@ -103,11 +103,13 @@ def _parse_header(hea_path: Path) -> dict:
     return info
 
 
-def load_chapman(chapman_dir: Path = config.CHAPMAN_DIR) -> pd.DataFrame:
-    headers = sorted(chapman_dir.rglob("*.hea"))
+def load_challenge(key: str, folder: Path | None = None) -> pd.DataFrame:
+    """Label table for one Challenge 2021 dataset ('chapman' or 'georgia')."""
+    folder = folder or config.CHALLENGE_DIRS[key]
+    headers = sorted(folder.rglob("*.hea"))
     if not headers:
         raise FileNotFoundError(
-            f"No .hea files in {chapman_dir}. Run: bash scripts/download_data.sh")
+            f"No .hea files in {folder}. Run: bash scripts/download_challenge.sh {key}")
 
     rows = []
     for hea in headers:
@@ -115,10 +117,12 @@ def load_chapman(chapman_dir: Path = config.CHAPMAN_DIR) -> pd.DataFrame:
         dx = set(info["dx"])
         rows.append({
             "record_id": hea.stem,
-            # Chapman-Shaoxing has one ECG per patient, so record = patient.
+            # The Challenge copies carry no patient IDs. Chapman-Shaoxing has
+            # one ECG per patient; for Georgia each record is treated as its
+            # own patient (a limitation for the patient-level bootstrap).
             "patient_id": hea.stem,
             "path": str(hea.with_suffix("")),
-            "dataset": "chapman",
+            "dataset": key,
             "age": info["age"],
             "sex": info["sex"],
             "af": config.SNOMED_AF in dx,
@@ -134,3 +138,11 @@ def load_chapman(chapman_dir: Path = config.CHAPMAN_DIR) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df["split"] = "external"        # never used for training or tuning
     return _apply_flutter_policy(df)
+
+
+def load_chapman(folder: Path | None = None) -> pd.DataFrame:
+    return load_challenge("chapman", folder)
+
+
+def load_georgia(folder: Path | None = None) -> pd.DataFrame:
+    return load_challenge("georgia", folder)

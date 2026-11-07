@@ -6,6 +6,7 @@ Run from the project folder:
 Outputs:
     data/processed/ptbxl_labels.csv
     data/processed/chapman_labels.csv
+    data/processed/georgia_labels.csv   (if Georgia is downloaded)
     results/01_label_counts.md     (summary report)
 """
 import sys
@@ -16,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pandas as pd  # noqa: E402
 
 from src import config  # noqa: E402
-from src.labels import load_chapman, load_ptbxl  # noqa: E402
+from src.labels import load_challenge, load_ptbxl  # noqa: E402
 
 
 def counts(df: pd.DataFrame) -> dict:
@@ -50,7 +51,9 @@ def main() -> None:
     lines.append("# Label counts\n")
     lines.append(f"Flutter policy: **{config.FLUTTER_POLICY}**\n")
 
-    for name, loader in [("PTB-XL", load_ptbxl), ("Chapman-Shaoxing", load_chapman)]:
+    loaders = [("PTB-XL", load_ptbxl)] + [
+        (config.DATASET_NAMES[k], lambda k=k: load_challenge(k)) for k in config.EXTERNAL_DATASETS]
+    for name, loader in loaders:
         try:
             df = loader()
         except FileNotFoundError as e:
@@ -68,7 +71,7 @@ def main() -> None:
             lines.append(f"| {k} | {v} |")
         lines.append("")
 
-        # Sanity check: every Chapman header should carry diagnosis codes.
+        # Sanity check: every Challenge header should carry diagnosis codes.
         # If many don't, the header format wasn't read properly.
         if "n_dx" in df:
             no_dx = int((df["n_dx"] == 0).sum())
@@ -76,7 +79,7 @@ def main() -> None:
             if no_dx > 0.05 * len(df):
                 lines.append("> **Warning:** many headers had no diagnosis codes. "
                              "The labels above are not reliable. Check a header file "
-                             "with: `head -20 $(find data/raw/chapman -name '*.hea' | head -1)`")
+                             f"with: `head -20 $(find data/raw/{df['dataset'].iloc[0]} -name '*.hea' | head -1)`")
             lines.append("")
 
         # Recording format (sampling rate, length, leads)

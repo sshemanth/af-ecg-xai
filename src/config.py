@@ -9,6 +9,19 @@ RESULTS_DIR = ROOT / "results"
 
 PTBXL_DIR = RAW_DIR / "ptbxl"
 CHAPMAN_DIR = RAW_DIR / "chapman"
+GEORGIA_DIR = RAW_DIR / "georgia"
+
+# ---- Datasets --------------------------------------------------------------
+# PTB-XL is split into train/val/test. The external sets are never used for
+# training or tuning; each comes from a different hospital. Both external
+# sets are the PhysioNet/CinC Challenge 2021 copies (SNOMED-CT codes in the
+# .hea headers, 500 Hz).
+DATASET_NAMES = {"ptbxl": "PTB-XL", "chapman": "Chapman-Shaoxing", "georgia": "Georgia"}
+EXTERNAL_DATASETS = ["chapman", "georgia"]
+ALL_DATASETS = ["ptbxl"] + EXTERNAL_DATASETS
+HELD_OUT_SPLITS = {"ptbxl": ["test"], "chapman": ["external"], "georgia": ["external"]}
+CHALLENGE_DIRS = {"chapman": CHAPMAN_DIR, "georgia": GEORGIA_DIR}
+CHALLENGE_FOLDERS = {"chapman": "chapman_shaoxing", "georgia": "georgia"}   # names on PhysioNet
 
 # ---- Signal settings -------------------------------------------------------
 # Both datasets are recorded at 500 Hz for 10 s. Keeping 500 Hz preserves
@@ -109,11 +122,23 @@ MODELS_DIR = RESULTS_DIR / "models"
 # the ResNet beats it, the ResNet is using more than RR irregularity.
 RR_FEATURES = ["hr_mean", "rr_mean", "rr_sd", "rr_cv", "rmssd", "nrmssd", "pnn50", "n_beats"]
 
+# Network architectures. "resnet" is the main model; "inception" is a
+# second, structurally different network used to check that the findings
+# are not specific to one architecture. Runs are saved as <arch>_seed<N>.
+ARCHS = ["resnet", "inception"]
+
 # 1D ResNet
 RESNET_WIDTHS = [64, 128, 192, 256]   # channels in the 4 stages
 RESNET_BLOCKS = 2                      # residual blocks per stage
 RESNET_KERNEL = 9
 DROPOUT = 0.3
+
+# InceptionTime-style 1D network (parallel convolutions of three widths,
+# no downsampling after the stem, residual links every 3 modules)
+INCEPTION_FILTERS = 32                 # per branch; 4 branches -> 128 channels
+INCEPTION_DEPTH = 6                    # inception modules
+INCEPTION_KERNELS = [39, 19, 9]        # at 125 Hz after the stem: ~312, 152, 72 ms
+INCEPTION_BOTTLENECK = 32
 
 # Training
 BATCH_SIZE = 64
@@ -187,3 +212,4 @@ XAI_N_PER_CLASS = 200      # random AF and random non-AF per dataset
 XAI_IG_STEPS = 32          # Integrated Gradients steps
 XAI_NOISE_MV = 0.01        # small noise for the stability check
 XAI_N_STABILITY = 100      # ECGs per dataset re-explained with noise
+XAI_METHODS_N_PER_CLASS = 100   # ECGs per class for the six-method comparison (step 11)

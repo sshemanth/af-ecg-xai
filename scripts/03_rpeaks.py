@@ -127,11 +127,11 @@ def report(title: str, rr: pd.DataFrame, thr: dict) -> list:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["ptbxl", "chapman", "all"], default="all")
+    ap.add_argument("--dataset", choices=config.ALL_DATASETS + ["all"], default="all")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2))
     args = ap.parse_args()
 
-    names = ["ptbxl", "chapman"] if args.dataset == "all" else [args.dataset]
+    names = config.ALL_DATASETS if args.dataset == "all" else [args.dataset]
     names = [n for n in names if (config.PROCESSED_DIR / f"{n}_index.csv").exists()
              or args.dataset != "all"]
 
@@ -162,10 +162,11 @@ def main() -> None:
         rr["regular_af_strict"] = ((rr["label"] == 1)
                                    & (rr[thr["metric"]] <= thr["strict_threshold"]))
         rr.to_csv(config.PROCESSED_DIR / f"{name}_rr.csv", index=False)
-        lines += report({"ptbxl": "PTB-XL", "chapman": "Chapman-Shaoxing"}[name], rr, thr)
+        lines += report(config.DATASET_NAMES[name], rr, thr)
 
     text = "\n".join(lines)
-    (config.RESULTS_DIR / "03_rpeaks_report.md").write_text(text)
+    suffix = "" if args.dataset == "all" else f"_{args.dataset}"
+    (config.RESULTS_DIR / f"03_rpeaks_report{suffix}.md").write_text(text)
     print("\n" + text)
 
 

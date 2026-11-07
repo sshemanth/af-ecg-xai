@@ -2,7 +2,7 @@
 
 A class-balanced random sample (AF and non-AF), plus every
 low-RR-variability, near-regular and paced AF ECG, all from the held-out
-sets (PTB-XL test, Chapman). Both steps use the same selection, so their
+sets (PTB-XL test and the external sets). Both steps use the same selection, so their
 results can be compared ECG by ECG.
 """
 import numpy as np
@@ -10,7 +10,8 @@ import pandas as pd
 
 from src import config
 
-DATASETS = {"ptbxl": ("PTB-XL test", ["test"]), "chapman": ("Chapman-Shaoxing", ["external"])}
+DATASETS = {k: (config.DATASET_NAMES[k] + (" test" if k == "ptbxl" else ""), config.HELD_OUT_SPLITS[k])
+            for k in config.ALL_DATASETS}
 GROUPS = [("AF (random sample)", "grp_af_random"),
           ("Non-AF (random sample)", "grp_non_random"),
           ("Low-RR-variability AF", "regular_af"),

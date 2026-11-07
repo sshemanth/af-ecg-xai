@@ -42,7 +42,7 @@ GROUPS = {
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=["ptbxl", "chapman"], default="ptbxl")
+    ap.add_argument("--dataset", choices=config.ALL_DATASETS, default="ptbxl")
     ap.add_argument("--group", choices=list(GROUPS), default="regular")
     ap.add_argument("--n", type=int, default=6)
     ap.add_argument("--seed", type=int, default=config.SEED)

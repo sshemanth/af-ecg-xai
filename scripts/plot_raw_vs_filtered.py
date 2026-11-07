@@ -31,7 +31,7 @@ from src.signals import _read_raw, _reorder_leads  # noqa: E402
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--record", required=True, help="record_id, e.g. 17360 or JS00001")
-    ap.add_argument("--dataset", choices=["ptbxl", "chapman"], default="ptbxl")
+    ap.add_argument("--dataset", choices=config.ALL_DATASETS, default="ptbxl")
     args = ap.parse_args()
 
     index = pd.read_csv(config.PROCESSED_DIR / f"{args.dataset}_index.csv",
