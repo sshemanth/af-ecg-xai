@@ -11,6 +11,8 @@ Each sample of the 10 s ECG gets one code:
     2  QRS      (R - 60 .. R + 100 ms: ventricular depolarisation, also carries RR timing)
     3  ST-T     (after QRS until the estimated end of the T-wave)
 """
+import warnings
+
 import numpy as np
 
 from src import config
@@ -19,8 +21,34 @@ OUTSIDE, ATRIAL, QRS, STT = 0, 1, 2, 3
 NAMES = {ATRIAL: "atrial", QRS: "qrs", STT: "stt"}
 
 
+def t_wave_ends(lead: np.ndarray, rpeaks: np.ndarray, fs: int = config.TARGET_FS) -> np.ndarray:
+    """Measured T-wave end after each R-peak (NaN where not found), from one
+    lead with NeuroKit2's wavelet delineation."""
+    out = np.full(len(rpeaks), np.nan)
+    if not config.T_OFFSET_DELINEATION or len(rpeaks) < 3:
+        return out
+    try:
+        import neurokit2 as nk
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            _, waves = nk.ecg_delineate(np.asarray(lead, float), np.asarray(rpeaks, int),
+                                        sampling_rate=fs, method="dwt")
+        ends = np.asarray(waves.get("ECG_T_Offsets", []), dtype=float)
+    except Exception:
+        return out
+    r = np.asarray(rpeaks, dtype=int)
+    for i in range(len(r) - 1):               # each T end must lie between its R and the next
+        ok = ends[(ends > r[i]) & (ends < r[i + 1])]
+        if len(ok):
+            out[i] = ok[0]
+    return out
+
+
 def beat_windows(rpeaks: np.ndarray, n: int = config.N_SAMPLES,
-                 fs: int = config.TARGET_FS) -> np.ndarray:
+                 fs: int = config.TARGET_FS, t_ends: np.ndarray | None = None) -> np.ndarray:
+    """Window code per sample. If measured T-wave ends are given (one per
+    R-peak, NaN where unknown), each atrial window starts after the later of
+    the measured end and the QT estimate, plus T_OFFSET_GUARD_MS."""
     codes = np.zeros(n, dtype=np.int8)
     r = np.sort(np.asarray(rpeaks, dtype=int))
     if len(r) < 2:
@@ -29,9 +57,14 @@ def beat_windows(rpeaks: np.ndarray, n: int = config.N_SAMPLES,
     after = int(config.QRS_AFTER_MS * fs / 1000)
     onset = int(config.QRS_ONSET_MS * fs / 1000)
 
-    for a, b in zip(r[:-1], r[1:]):                      # one cycle: R_a .. R_b
+    guard = int(config.T_OFFSET_GUARD_MS * fs / 1000)
+    order = np.argsort(np.asarray(rpeaks, dtype=int))
+    t_ends = None if t_ends is None else np.asarray(t_ends, dtype=float)[order]
+    for i, (a, b) in enumerate(zip(r[:-1], r[1:])):      # one cycle: R_a .. R_b
         rr = (b - a) / fs
         stt_end = a - onset + int(config.QTC_S * np.sqrt(rr) * fs)
+        if t_ends is not None and np.isfinite(t_ends[i]):
+            stt_end = max(stt_end, int(t_ends[i]) + guard)
         stt_end = min(stt_end, b - before)               # can't run into the next QRS
         codes[a + after:stt_end] = STT
         codes[max(stt_end, a + after):b - before] = ATRIAL

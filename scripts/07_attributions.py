@@ -44,51 +44,11 @@ from src import config  # noqa: E402
 from src.data import ECGDataset, load_norm_stats  # noqa: E402
 from src.model import pick_device  # noqa: E402
 from src.runs import find_resnet_runs, load_model, primary_run  # noqa: E402
-from src.windows import ATRIAL, NAMES, OUTSIDE, QRS, STT, beat_windows, shares  # noqa: E402
+from src.selection import DATASETS, GROUPS, select  # noqa: E402
+from src.windows import ATRIAL, NAMES, OUTSIDE, QRS, STT, beat_windows, shares, t_wave_ends  # noqa: E402
+
+LEAD_II = config.LEADS.index("II")
 from src.xai import Explainer, spearman  # noqa: E402
-
-DATASETS = {"ptbxl": ("PTB-XL test", ["test"]), "chapman": ("Chapman-Shaoxing", ["external"])}
-GROUPS = [("AF (random sample)", "grp_af_random"),
-          ("Non-AF (random sample)", "grp_non_random"),
-          ("Low-RR-variability AF", "regular_af"),
-          ("Near-regular AF", "regular_af_strict"),
-          ("Paced AF", "paced_af")]
-
-
-def select(key: str, n_per_class: int, primary: dict) -> pd.DataFrame:
-    """The ECGs to explain, with group flags and the model's prediction."""
-    pred_f = config.EVAL_DIR / f"predictions_{key}.csv"
-    if not pred_f.exists():
-        sys.exit(f"{pred_f} not found. Run scripts/06_evaluate.py first.")
-    pred = pd.read_csv(pred_f, dtype={"record_id": str, "patient_id": str})
-    pcol = f"prob_{primary['name']}"
-    if pcol not in pred:
-        sys.exit(f"{pcol} not in {pred_f.name}; was the evaluation run with this model?")
-    idx = pd.read_csv(config.PROCESSED_DIR / f"{key}_index.csv", dtype={"record_id": str})
-    rr = pd.read_csv(config.PROCESSED_DIR / f"{key}_rr.csv", dtype={"record_id": str})
-    df = (pred[["record_id", "label", "regular_af", "regular_af_strict", pcol]]
-          .rename(columns={pcol: "prob"})
-          .merge(idx[["record_id", "paced"]], on="record_id", how="left")
-          .merge(rr[["record_id", "rpeaks", "rr_cv"]], on="record_id", how="left"))
-    for c in ["regular_af", "regular_af_strict", "paced"]:
-        df[c] = df[c].fillna(False).astype(bool)
-    df["paced_af"] = df["paced"] & (df["label"] == 1)
-    df["pred_af"] = df["prob"] >= primary["threshold"]
-    df["correct"] = df["pred_af"] == (df["label"] == 1)
-
-    rng = np.random.default_rng(config.SEED)
-    df["grp_af_random"] = False
-    df["grp_non_random"] = False
-    for lab, col in [(1, "grp_af_random"), (0, "grp_non_random")]:
-        pool = df.index[df["label"] == lab].to_numpy()
-        pick = rng.choice(pool, size=min(n_per_class, len(pool)), replace=False)
-        df.loc[pick, col] = True
-    keep = df[["grp_af_random", "grp_non_random", "regular_af",
-               "regular_af_strict", "paced_af"]].any(axis=1)
-    df = df[keep & df["rpeaks"].notna()].reset_index(drop=True)
-    # random order, so the stability subset (first N) is a fair mix
-    return df.sample(frac=1, random_state=config.SEED).reset_index(drop=True)
-
 
 def explain(key: str, sel: pd.DataFrame, explainer: Explainer, noise_std: np.ndarray,
             batch: int) -> tuple[pd.DataFrame, dict]:
@@ -111,7 +71,7 @@ def explain(key: str, sel: pd.DataFrame, explainer: Explainer, noise_std: np.nda
 
         for j, (_, r) in enumerate(part.iterrows()):
             peaks = np.array(str(r["rpeaks"]).split(), dtype=int)
-            codes = beat_windows(peaks)
+            codes = beat_windows(peaks, t_ends=t_wave_ends(x[j, LEAD_II].numpy(), peaks))
             inside = codes != OUTSIDE
             ig_t = ig[j].sum(axis=0)                             # signed, summed over leads
             row = {"record_id": r["record_id"]}

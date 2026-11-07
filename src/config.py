@@ -172,6 +172,13 @@ QRS_BEFORE_MS = 60
 QRS_AFTER_MS = 100
 QRS_ONSET_MS = 40          # QRS onset taken as this long before the R-peak
 QTC_S = 0.44
+# Each beat's T-wave end is also measured (NeuroKit2 wave delineation,
+# lead II). The atrial window starts after whichever is LATER, the measured
+# T-wave end or the QT estimate, plus a safety gap. Using the later of the
+# two means a delineation miss can only shrink the atrial window, never
+# let a T-wave tail into it.
+T_OFFSET_DELINEATION = True
+T_OFFSET_GUARD_MS = 20
 
 # Which ECGs to explain (held-out sets only: PTB-XL test, Chapman): a
 # class-balanced random sample, plus every low-RR-variability, near-regular
