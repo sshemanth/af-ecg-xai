@@ -359,6 +359,8 @@ af-ecg-xai/
 
 ## Datasets and licences
 
+The code in this repository is released under the MIT License (see `LICENSE`).
+
 Both datasets are de-identified and public on PhysioNet. Cite them if you use this code:
 
 - Wagner P, Strodthoff N, Bousseljot R-D, et al. PTB-XL, a large publicly available electrocardiography dataset. *Scientific Data* 7, 154 (2020). https://doi.org/10.1038/s41597-020-0495-6
