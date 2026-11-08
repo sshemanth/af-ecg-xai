@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite it as below."
+title: "Code for: Deep ECG Atrial Fibrillation Detectors Rely on Absent P-Waves Rather Than RR Irregularity"
+type: software
+authors:
+  - family-names: Bollepalli
+    given-names: Sri Sai Hemanth
+    affiliation: University of Technology Sydney
+license: MIT
+repository-code: "https://github.com/sshemanth/af-ecg-xai"
+version: 1.0.0
+date-released: 2026-11-08
+keywords:
+  - atrial fibrillation
+  - electrocardiogram
+  - deep learning
+  - explainable AI
+  - counterfactual explanations
+  - external validation
