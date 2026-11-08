@@ -7,6 +7,7 @@ authors:
     given-names: Sri Sai Hemanth
     affiliation: University of Technology Sydney
 license: MIT
+doi: 10.5281/zenodo.24052057
 repository-code: "https://github.com/sshemanth/af-ecg-xai"
 version: 1.0.0
 date-released: 2026-11-08

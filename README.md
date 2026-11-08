@@ -1,5 +1,7 @@
 # AF Detection from 12-Lead ECG Across Hospitals
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24052057.svg)](https://doi.org/10.5281/zenodo.24052057)
+
 Deep learning detects atrial fibrillation (AF) on the ECG very accurately, but it is not clear *what* the models rely on: the atrial signs of AF (missing P-waves, fibrillatory f-waves) or the simpler cue of irregular beat timing (RR intervals).
 
 This repository trains a 1D ResNet (and, as a check, an InceptionTime network) on 12-lead ECGs from **PTB-XL**, tests them without retraining on **Chapman-Shaoxing** and **Georgia** from two other hospitals, and compares them with a model that only sees RR intervals. Six attribution methods measure where the evidence falls (atrial vs ventricular parts of each beat), and controlled occlusion and counterfactual edits test what the model actually needs. AF with a regular ventricular response and paced rhythms, where the RR cue is weak, are analysed as subgroups.
